@@ -43,16 +43,19 @@ def _with_screen(fn):
     return curses.wrapper(_boot)
 
 
-def _open_screen():
+def open_screen():
     """Start the session screen (initscr + the modes curses.wrapper would
     set). Returns the screen, or None when curses can't start on this
     terminal — the caller degrades the whole session to the text menu."""
+    global _SCREEN, _USE_CURSES
     try:
         stdscr = curses.initscr()
         curses.noecho()
         curses.cbreak()
         stdscr.keypad(True)
         _init_tui_colors()
+        _SCREEN = stdscr
+        _USE_CURSES = True
         return stdscr
     except curses.error:
         # initscr may have partially engaged the terminal; put it back.
@@ -64,7 +67,7 @@ def _open_screen():
         return None
 
 
-def _close_screen() -> None:
+def close_screen() -> None:
     """End the session screen. Idempotent and guarded, so it is safe after a
     mid-session degrade already ended the screen."""
     global _SCREEN
@@ -92,13 +95,16 @@ def _degrade_to_text() -> None:
     global _USE_CURSES
     _USE_CURSES = False
     
-    _close_screen()
+    close_screen()
 
 
-class _Cancelled(Exception):
-    """Raised when the user cancels a prompt (Esc in the TUI, Ctrl-C/EOF at a
-    text prompt); the active prompt chain unwinds back to the menu instead of
-    launching a mode with defaults."""
+class CancelledError(Exception):
+    pass
+
+_Cancelled = CancelledError
+"""Raised when the user cancels a prompt (Esc in the TUI, Ctrl-C/EOF at a
+text prompt); the active prompt chain unwinds back to the menu instead of
+launching a mode with defaults."""
 
 
 def _prompt_str(label: str, default: str | None) -> str | None:
@@ -115,7 +121,7 @@ def _prompt_str(label: str, default: str | None) -> str | None:
     return raw or (default or "")
 
 
-def _ask(label: str, default: str | None) -> str:
+def ask(label: str, default: str | None) -> str:
     """_prompt_str that raises _Cancelled instead of returning None, so a
     multi-prompt handler aborts as one unit."""
     val = _prompt_str(label, default)
@@ -124,14 +130,14 @@ def _ask(label: str, default: str | None) -> str:
     return val
 
 
-def _ask_yn(label: str, default: str = "N") -> bool:
-    return _ask(label, default).lower().startswith("y")
+def ask_yn(label: str, default: str = "N") -> bool:
+    return ask(label, default).lower().startswith("y")
 
 
-def _prompt_out(label: str, default: str) -> str:
+def prompt_out(label: str, default: str) -> str:
     """Output-path prompt: expands ~ (no shell is there to do it) but is not
     made absolute, so relative paths keep their current meaning."""
-    return os.path.expanduser(_ask(label, default) or default)
+    return os.path.expanduser(ask(label, default) or default)
 
 
 def _out_note(path: str | None) -> str:
@@ -140,25 +146,25 @@ def _out_note(path: str | None) -> str:
     return f"Report written to {os.path.abspath(path)}" if path else ""
 
 
-def _prompt_int(label: str, default: int) -> int:
+def prompt_int(label: str, default: int) -> int:
     prompt = label
     while True:
-        s = _ask(prompt, str(default)).strip()
+        s = ask(prompt, str(default)).strip()
         try:
             return int(s)
         except ValueError:
             prompt = f"{label} (not a number, try again)"
 
 
-def _notify(msg: str) -> None:
+def notify(msg: str) -> None:
     """A notice the user must see before the next menu redraw."""
     if _USE_CURSES:
-        _tui_page("Notice", msg)
+        tui_page("Notice", msg)
     else:
         print(f"  {msg}")
 
 
-def _box_menu(title: str, sections: list, width: int = 44) -> None:
+def box_menu(title: str, sections: list, width: int = 44) -> None:
     """Fallback text menu for environments without curses."""
     iw = width - 4
     print(f"\n  ╔{'═' * (width - 2)}╗")
@@ -336,14 +342,14 @@ def _tui_select(
         cur = 0
         while True:
             _draw(stdscr, cur)
-            key = stdscr.getch()
-            if key in (curses.KEY_UP, ord("k")):
+            key = stdscr.get_wch()
+            if key in (curses.KEY_UP, "k"):
                 cur = (cur - 1) % len(flat)
-            elif key in (curses.KEY_DOWN, ord("j")):
+            elif key in (curses.KEY_DOWN, "j"):
                 cur = (cur + 1) % len(flat)
-            elif key in (curses.KEY_ENTER, 10, 13):
+            elif key in (curses.KEY_ENTER, 10, 13, "\n", "\r"):
                 return flat[cur]
-            elif key in (ord("q"), ord("Q"), 27):
+            elif key in ("q", "Q", 27, "\x1b"):
                 return None
             elif key == curses.KEY_RESIZE:
                 pass
@@ -426,21 +432,21 @@ def _tui_prompt_str(label: str, default: str | None) -> str | None:
                 pass
             stdscr.refresh()
 
-            key = stdscr.getch()
-            if key in (curses.KEY_ENTER, 10, 13):
+            key = stdscr.get_wch()
+            if key in (curses.KEY_ENTER, 10, 13, "\n", "\r"):
                 result = "".join(buf).strip()
                 return result if result else (default or "")
-            elif key == 27:
+            elif key in (27, "\x1b"):
                 return None  # Esc cancels; it must never launch with defaults
-            elif key in (curses.KEY_BACKSPACE, 127, 8):
+            elif key in (curses.KEY_BACKSPACE, 127, 8, "\x7f", "\x08"):
                 if buf:
                     buf.pop()
-            elif key == 21:  # Ctrl-U: clear the field (pre-filled defaults)
+            elif key in (21, "\x15"):  # Ctrl-U: clear the field (pre-filled defaults)
                 buf.clear()
             elif key == curses.KEY_RESIZE:
                 pass
-            elif 32 <= key <= 126:
-                buf.append(chr(key))
+            elif isinstance(key, str) and key.isprintable():
+                buf.append(key)
 
     try:
         return _with_screen(_run)
@@ -486,8 +492,8 @@ def _tui_pause() -> None:
         stdscr.refresh()
 
         while True:
-            key = stdscr.getch()
-            if key in (curses.KEY_ENTER, 10, 13, ord("q"), ord("Q"), 27):
+            key = stdscr.get_wch()
+            if key in (curses.KEY_ENTER, 10, 13, "\n", "\r", "q", "Q", 27, "\x1b"):
                 return
 
     try:
@@ -500,7 +506,7 @@ def _tui_pause() -> None:
         _pause()
 
 
-def _fallback_input(prompt: str, mapping: dict) -> Any:
+def fallback_input(prompt: str, mapping: dict) -> Any:
     # KeyboardInterrupt propagates on purpose: Ctrl-C at the menu must exit
     # 130 like the curses menu does, not read as a clean Quit.
     try:
@@ -511,124 +517,17 @@ def _fallback_input(prompt: str, mapping: dict) -> Any:
     return mapping.get(ch, "invalid")
 
 
-_MAIN_SECTIONS = [
-    (
-        "LIBRARY",
-        [
-            "Library tree & exports                  \u2192",
-            "Library statistics",
-        ],
-    ),
-    (
-        "INTEGRITY",
-        [
-            "Test FLAC files",
-            "Test MP3 files",
-            "Test Opus files",
-            "Test WAV files",
-            "Test WMA files",
-        ],
-    ),
-    (
-        "ARTWORK",
-        [
-            "Extract cover art",
-            "Report missing art",
-            "Audit art quality",
-        ],
-    ),
-    (
-        "METADATA",
-        [
-            "Find duplicate albums",
-            "Audit tags",
-            "Audit bitrates",
-            "Audit ReplayGain",
-        ],
-    ),
-    (
-        "SETTINGS",
-        [
-            "Change library root",
-        ],
-    ),
-    ("", ["Quit"]),
-]
-
-_LIB_SECTIONS = [
-    (
-        "",
-        [
-            "Build music library tree",
-            "AI-readable library export",
-            "Generate all wings (per-genre)",
-            "Generate AI wings (per-genre flat)",
-            "Generate smart playlist (.m3u)",
-        ],
-    ),
-    ("", ["Back to main menu"]),
-]
-
-# Items that get a letter key instead of a number in the fallback menu.
-# Matched on the cleaned label so the mapping follows the sections.
-_LETTER_KEYS = {
-    "Quit": ("q", None),
-    "Back to main menu": ("b", None),
-    "Change library root": ("s", "self"),  # "self": maps to its own (si, ii)
-}
-
-_MAIN_ALIASES: dict[str, tuple | None] = {
-    "l": (0, 0),
-    "lib": (0, 0),
-    "library": (0, 0),
-    "stats": (0, 1),
-    "flac": (1, 0),
-    "mp3": (1, 1),
-    "opus": (1, 2),
-    "wav": (1, 3),
-    "wma": (1, 4),
-    "art": (2, 0),
-    "extract": (2, 0),
-    "missing": (2, 1),
-    "quality": (2, 2),
-    "dup": (3, 0),
-    "dupes": (3, 0),
-    "tags": (3, 1),
-    "audit": (3, 1),
-    "bitrate": (3, 2),
-    "rg": (3, 3),
-    "replaygain": (3, 3),
-    "settings": (4, 0),
-    "config": (4, 0),
-    "c": (4, 0),
-    "quit": None,
-    "exit": None,
-}
-
-_LIB_ALIASES: dict[str, tuple | None] = {
-    "tree": (0, 0),
-    "lib": (0, 0),
-    "ai": (0, 1),
-    "wings": (0, 2),
-    "ai-wings": (0, 3),
-    "playlist": (0, 4),
-    "back": None,
-    "": None,
-}
-
-
-def _build_fallback(sections: list, extra_aliases: dict[str, tuple | None]):
-    """Derive the no-curses fallback menu rows and input map from the same
-    sections the curses menu renders, so the two can never drift apart (the
-    numbered map used to be maintained by hand and went stale)."""
-    mapping: dict[str, tuple | None] = dict(extra_aliases)
-    display: list[tuple[str, list[str]]] = []
+def build_fallback(sections, aliases=None, letter_keys=None):
+    aliases = aliases or {}
+    letter_keys = letter_keys or {}
+    mapping = dict(aliases)
+    display = []
     n = 0
     for si, (hdr, items) in enumerate(sections):
         rows = []
         for ii, label in enumerate(items):
             clean = " ".join(label.split())
-            letter = _LETTER_KEYS.get(clean)
+            letter = letter_keys.get(clean)
             if letter is not None:
                 key, target = letter
                 rows.append(f"{key}) {clean}")
@@ -640,42 +539,17 @@ def _build_fallback(sections: list, extra_aliases: dict[str, tuple | None]):
         display.append((hdr, rows))
     return display, mapping, n
 
-
-_MAIN_FALLBACK_DISPLAY, _MAIN_FALLBACK_MAP, _MAIN_FALLBACK_MAX = _build_fallback(
-    _MAIN_SECTIONS, _MAIN_ALIASES
-)
-_LIB_FALLBACK_DISPLAY, _LIB_FALLBACK_MAP, _LIB_FALLBACK_MAX = _build_fallback(
-    _LIB_SECTIONS, _LIB_ALIASES
-)
-
-# Named (section, item) results for the non-mode rows, so the dispatch below
-# reads without cross-referencing _MAIN_SECTIONS/_LIB_SECTIONS indices.
-_SEL_CHANGE_ROOT = (4, 0)
-_SEL_QUIT = (5, 0)
-_SEL_LIB_BACK = (1, 0)
-
-
-def _select_main(title: str) -> tuple | None:
+def tui_select(title, sections, hints="↑↓ Navigate  ⏎ Select  q Quit", aliases=None, letter_keys=None):
     if _USE_CURSES:
-        return _tui_select(title, _MAIN_SECTIONS)
-    _box_menu(title, _MAIN_FALLBACK_DISPLAY)
-    return _fallback_input(
-        f"  Select [1-{_MAIN_FALLBACK_MAX}/s/q]: ", _MAIN_FALLBACK_MAP
-    )
+        res = _tui_select(title, sections, hints=hints)
+        if res != "fallback":
+            return res
+    # Fallback
+    display, mapping, max_n = build_fallback(sections, aliases, letter_keys)
+    box_menu(title, display)
+    return fallback_input(f"  Select [1-{max_n}/q]: ", mapping)
 
-
-def _select_library() -> tuple | None:
-    if _USE_CURSES:
-        return _tui_select(
-            "Library Tree & Exports",
-            _LIB_SECTIONS,
-            hints="\u2191\u2193 Navigate  \u23ce Select  Esc Back",
-        )
-    _box_menu("Library Tree & Exports", _LIB_FALLBACK_DISPLAY)
-    return _fallback_input(f"  Select [1-{_LIB_FALLBACK_MAX}/b]: ", _LIB_FALLBACK_MAP)
-
-
-def _tui_page(title: str, content: str) -> None:
+def tui_page(title: str, content: str) -> None:
     if not _USE_CURSES:
         print(content)
         _pause()
@@ -701,7 +575,7 @@ def _tui_page(title: str, content: str) -> None:
             max_lines = max(1, h - 3)
             last_top = max(0, len(lines) - max_lines)
             top = min(top, last_top)  # keep the view valid across resizes
-            visible_w = content_w - 4
+            visible_w = max(1, content_w - 4)
             max_left = max(0, max_line_len - visible_w)
             left = min(left, max_left)
 
@@ -747,25 +621,25 @@ def _tui_page(title: str, content: str) -> None:
 
             stdscr.refresh()
 
-            key = stdscr.getch()
-            if key in (curses.KEY_UP, ord("k")):
+            key = stdscr.get_wch()
+            if key in (curses.KEY_UP, "k"):
                 top = max(0, top - 1)
-            elif key in (curses.KEY_DOWN, ord("j")):
+            elif key in (curses.KEY_DOWN, "j"):
                 top = min(last_top, top + 1)
-            elif key in (curses.KEY_LEFT, ord("h")):
+            elif key in (curses.KEY_LEFT, "h"):
                 left = max(0, left - 8)
-            elif key in (curses.KEY_RIGHT, ord("l")):
+            elif key in (curses.KEY_RIGHT, "l"):
                 left = min(max_left, left + 8)
             elif key == curses.KEY_PPAGE:
                 top = max(0, top - max_lines)
             elif key == curses.KEY_NPAGE:
                 top = min(last_top, top + max_lines)
-            elif key in (curses.KEY_HOME, ord("g")):
+            elif key in (curses.KEY_HOME, "g"):
                 top = 0
                 left = 0
-            elif key in (curses.KEY_END, ord("G")):
+            elif key in (curses.KEY_END, "G"):
                 top = last_top
-            elif key in (ord("q"), ord("Q"), 27, curses.KEY_ENTER, 10, 13):
+            elif key in ("q", "Q", 27, "\x1b", curses.KEY_ENTER, 10, 13, "\n", "\r"):
                 break
             elif key == curses.KEY_RESIZE:
                 pass
@@ -791,7 +665,7 @@ def capture_output():
         sys.stdout, sys.stderr = old_out, old_err
 
 
-def _run_with_capture(title: str, func, *args, footer: str = "", **kwargs):
+def run_with_capture(title: str, func, *args, footer: str = "", **kwargs):
     result = None
     note = ""
     with capture_output() as (out, err):
@@ -814,7 +688,7 @@ def _run_with_capture(title: str, func, *args, footer: str = "", **kwargs):
                     curses.endwin()
             except curses.error:
                 pass
-        _reset_terminal()
+        reset_terminal()
 
     text = ""
     if note:
@@ -837,12 +711,12 @@ def _run_with_capture(title: str, func, *args, footer: str = "", **kwargs):
 
     text = text.strip()
     if text:
-        _tui_page(title, text)
+        tui_page(title, text)
     else:
         _pause()
 
 
-def _reset_terminal() -> None:
+def reset_terminal() -> None:
     if _SCREEN is not None:
         return
     if not sys.stdin.isatty():
