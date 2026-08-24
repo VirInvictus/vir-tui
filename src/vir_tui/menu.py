@@ -13,7 +13,6 @@ except ImportError:
     HAVE_CURSES = False
 
 import subprocess
-from .core import info, warn, error, success
 
 # =====================================
 # Curses TUI / Fallbacks

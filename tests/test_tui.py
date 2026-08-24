@@ -1,5 +1,5 @@
-import pytest
 from vir_tui import core, menu
+
 
 def test_formatters():
     # Since we can't easily mock sys.stdout.isatty without side effects, 
