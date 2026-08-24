@@ -71,7 +71,7 @@ def close_screen() -> None:
     mid-session degrade already ended the screen."""
     global _SCREEN
     _SCREEN = None
-    
+
     if not HAVE_CURSES:
         return
     try:
@@ -93,12 +93,13 @@ def _degrade_to_text() -> None:
     plain print/input work from here on."""
     global _USE_CURSES
     _USE_CURSES = False
-    
+
     close_screen()
 
 
 class CancelledError(Exception):
     pass
+
 
 _Cancelled = CancelledError
 """Raised when the user cancels a prompt (Esc in the TUI, Ctrl-C/EOF at a
@@ -538,7 +539,14 @@ def build_fallback(sections, aliases=None, letter_keys=None):
         display.append((hdr, rows))
     return display, mapping, n
 
-def tui_select(title, sections, hints="↑↓ Navigate  ⏎ Select  q Quit", aliases=None, letter_keys=None):
+
+def tui_select(
+    title,
+    sections,
+    hints="↑↓ Navigate  ⏎ Select  q Quit",
+    aliases=None,
+    letter_keys=None,
+):
     if _USE_CURSES:
         res = _tui_select(title, sections, hints=hints)
         if res != "fallback":
@@ -547,6 +555,7 @@ def tui_select(title, sections, hints="↑↓ Navigate  ⏎ Select  q Quit", ali
     display, mapping, max_n = build_fallback(sections, aliases, letter_keys)
     box_menu(title, display)
     return fallback_input(f"  Select [1-{max_n}/q]: ", mapping)
+
 
 def tui_page(title: str, content: str) -> None:
     if not _USE_CURSES:

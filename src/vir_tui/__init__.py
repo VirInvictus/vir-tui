@@ -1,4 +1,14 @@
-from .core import info, success, warn, error, dry_run, print_header, print_summary, color, tqdm
+from .core import (
+    info,
+    success,
+    warn,
+    error,
+    dry_run,
+    print_header,
+    print_summary,
+    color,
+    tqdm,
+)
 from .menu import (
     tui_select,
     build_fallback,
@@ -16,5 +26,5 @@ from .menu import (
     box_menu,
     fallback_input,
     _Cancelled,  # for backwards compatibility
-    capture_output
+    capture_output,
 )
