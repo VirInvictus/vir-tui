@@ -1,16 +1,15 @@
-import io
 import os
 import sys
-import traceback
-from contextlib import contextmanager
+import curses
 try:
     import curses
     HAVE_CURSES = True
 except ImportError:
     HAVE_CURSES = False
-import subprocess
+# =====================================
+# Curses TUI / Fallbacks
+# =====================================
 
-from .core import info, warn, error, success
 _USE_CURSES = HAVE_CURSES and sys.stdin.isatty()
 
 # T7: one persistent curses screen per interactive session. interactive_menu
@@ -61,7 +60,7 @@ def _close_screen() -> None:
     mid-session degrade already ended the screen."""
     global _SCREEN
     _SCREEN = None
-    
+    utils.set_shared_screen(None)
     if not HAVE_CURSES:
         return
     try:
@@ -83,7 +82,7 @@ def _degrade_to_text() -> None:
     plain print/input work from here on."""
     global _USE_CURSES
     _USE_CURSES = False
-    
+    utils.IN_TUI = False
     _close_screen()
 
 
@@ -503,12 +502,334 @@ def _fallback_input(prompt: str, mapping: dict) -> Any:
     return mapping.get(ch, "invalid")
 
 
-def _reset_terminal() -> None:
-    if _SCREEN is not None:
+_MAIN_SECTIONS = [
+    (
+        "LIBRARY",
+        [
+            "Library tree & exports                  \u2192",
+            "Library statistics",
+        ],
+    ),
+    (
+        "INTEGRITY",
+        [
+            "Test FLAC files",
+            "Test MP3 files",
+            "Test Opus files",
+            "Test WAV files",
+            "Test WMA files",
+        ],
+    ),
+    (
+        "ARTWORK",
+        [
+            "Extract cover art",
+            "Report missing art",
+            "Audit art quality",
+        ],
+    ),
+    (
+        "METADATA",
+        [
+            "Find duplicate albums",
+            "Audit tags",
+            "Audit bitrates",
+            "Audit ReplayGain",
+        ],
+    ),
+    (
+        "SETTINGS",
+        [
+            "Change library root",
+        ],
+    ),
+    ("", ["Quit"]),
+]
+
+_LIB_SECTIONS = [
+    (
+        "",
+        [
+            "Build music library tree",
+            "AI-readable library export",
+            "Generate all wings (per-genre)",
+            "Generate AI wings (per-genre flat)",
+            "Generate smart playlist (.m3u)",
+        ],
+    ),
+    ("", ["Back to main menu"]),
+]
+
+# Items that get a letter key instead of a number in the fallback menu.
+# Matched on the cleaned label so the mapping follows the sections.
+_LETTER_KEYS = {
+    "Quit": ("q", None),
+    "Back to main menu": ("b", None),
+    "Change library root": ("s", "self"),  # "self": maps to its own (si, ii)
+}
+
+_MAIN_ALIASES: dict[str, tuple | None] = {
+    "l": (0, 0),
+    "lib": (0, 0),
+    "library": (0, 0),
+    "stats": (0, 1),
+    "flac": (1, 0),
+    "mp3": (1, 1),
+    "opus": (1, 2),
+    "wav": (1, 3),
+    "wma": (1, 4),
+    "art": (2, 0),
+    "extract": (2, 0),
+    "missing": (2, 1),
+    "quality": (2, 2),
+    "dup": (3, 0),
+    "dupes": (3, 0),
+    "tags": (3, 1),
+    "audit": (3, 1),
+    "bitrate": (3, 2),
+    "rg": (3, 3),
+    "replaygain": (3, 3),
+    "settings": (4, 0),
+    "config": (4, 0),
+    "c": (4, 0),
+    "quit": None,
+    "exit": None,
+}
+
+_LIB_ALIASES: dict[str, tuple | None] = {
+    "tree": (0, 0),
+    "lib": (0, 0),
+    "ai": (0, 1),
+    "wings": (0, 2),
+    "ai-wings": (0, 3),
+    "playlist": (0, 4),
+    "back": None,
+    "": None,
+}
+
+
+def _build_fallback(sections: list, extra_aliases: dict[str, tuple | None]):
+    """Derive the no-curses fallback menu rows and input map from the same
+    sections the curses menu renders, so the two can never drift apart (the
+    numbered map used to be maintained by hand and went stale)."""
+    mapping: dict[str, tuple | None] = dict(extra_aliases)
+    display: list[tuple[str, list[str]]] = []
+    n = 0
+    for si, (hdr, items) in enumerate(sections):
+        rows = []
+        for ii, label in enumerate(items):
+            clean = " ".join(label.split())
+            letter = _LETTER_KEYS.get(clean)
+            if letter is not None:
+                key, target = letter
+                rows.append(f"{key}) {clean}")
+                mapping[key] = (si, ii) if target == "self" else target
+            else:
+                n += 1
+                rows.append(f"{n}) {clean}")
+                mapping[str(n)] = (si, ii)
+        display.append((hdr, rows))
+    return display, mapping, n
+
+
+_MAIN_FALLBACK_DISPLAY, _MAIN_FALLBACK_MAP, _MAIN_FALLBACK_MAX = _build_fallback(
+    _MAIN_SECTIONS, _MAIN_ALIASES
+)
+_LIB_FALLBACK_DISPLAY, _LIB_FALLBACK_MAP, _LIB_FALLBACK_MAX = _build_fallback(
+    _LIB_SECTIONS, _LIB_ALIASES
+)
+
+# Named (section, item) results for the non-mode rows, so the dispatch below
+# reads without cross-referencing _MAIN_SECTIONS/_LIB_SECTIONS indices.
+_SEL_CHANGE_ROOT = (4, 0)
+_SEL_QUIT = (5, 0)
+_SEL_LIB_BACK = (1, 0)
+
+
+def _select_main(title: str) -> tuple | None:
+    if _USE_CURSES:
+        return _tui_select(title, _MAIN_SECTIONS)
+    _box_menu(title, _MAIN_FALLBACK_DISPLAY)
+    return _fallback_input(
+        f"  Select [1-{_MAIN_FALLBACK_MAX}/s/q]: ", _MAIN_FALLBACK_MAP
+    )
+
+
+def _select_library() -> tuple | None:
+    if _USE_CURSES:
+        return _tui_select(
+            "Library Tree & Exports",
+            _LIB_SECTIONS,
+            hints="\u2191\u2193 Navigate  \u23ce Select  Esc Back",
+        )
+    _box_menu("Library Tree & Exports", _LIB_FALLBACK_DISPLAY)
+    return _fallback_input(f"  Select [1-{_LIB_FALLBACK_MAX}/b]: ", _LIB_FALLBACK_MAP)
+
+
+def _tui_page(title: str, content: str) -> None:
+    if not _USE_CURSES:
+        print(content)
+        _pause()
         return
-    if not sys.stdin.isatty():
-        return
+
+    lines = content.replace("\x00", "").expandtabs(4).split("\n")
+    # Computed once, not per keypress: the content never changes while paging.
+    max_line_len = max((len(ln) for ln in lines), default=0)
+
+    def _run(stdscr):
+        _curs_set(0)
+        top = 0
+        left = 0
+        while True:
+            stdscr.erase()
+            h, w = stdscr.getmaxyx()
+            fa = curses.color_pair(_CP_FRAME)
+
+            # Width follows the longest line (up to the terminal width) so wide
+            # reports — long duplicate paths, say — are not chopped at 80 columns.
+            content_w = min(w, max(_TUI_BOX_W, max_line_len + 4))
+            bx = max(0, (w - content_w) // 2)
+            max_lines = max(1, h - 3)
+            last_top = max(0, len(lines) - max_lines)
+            top = min(top, last_top)  # keep the view valid across resizes
+            visible_w = content_w - 4
+            max_left = max(0, max_line_len - visible_w)
+            left = min(left, max_left)
+
+            # Title on the top border, hints on the last row; content fills the
+            # full height between them.
+            _safe_addstr(stdscr, 0, bx, "╔" + "═" * (content_w - 2) + "╗", fa)
+            _safe_addstr(
+                stdscr,
+                0,
+                bx + 2,
+                f" {title} ",
+                curses.color_pair(_CP_TITLE) | curses.A_BOLD,
+            )
+            _safe_addstr(stdscr, h - 2, bx, "╚" + "═" * (content_w - 2) + "╝", fa)
+
+            hints = "↑↓ Scroll  ←→ Pan  PgUp/Dn  g/G Top/Bottom  q/Esc Close"
+            _safe_addstr(
+                stdscr,
+                h - 1,
+                max(0, (w - len(hints)) // 2),
+                hints,
+                curses.color_pair(_CP_HINT) | curses.A_DIM,
+            )
+
+            for i in range(max_lines):
+                _safe_addstr(stdscr, i + 1, bx, "║", fa)
+                if top + i < len(lines):
+                    ln = lines[top + i]
+                    seg = ln[left : left + visible_w]
+                    # Ellipsis markers show that a line continues off-screen.
+                    if len(ln) - left > visible_w and seg:
+                        seg = seg[:-1] + "…"
+                    if left and seg:
+                        seg = "…" + seg[1:]
+                    _safe_addstr(
+                        stdscr,
+                        i + 1,
+                        bx + 2,
+                        seg,
+                        curses.color_pair(_CP_ITEM),
+                    )
+                _safe_addstr(stdscr, i + 1, bx + content_w - 1, "║", fa)
+
+            stdscr.refresh()
+
+            key = stdscr.getch()
+            if key in (curses.KEY_UP, ord("k")):
+                top = max(0, top - 1)
+            elif key in (curses.KEY_DOWN, ord("j")):
+                top = min(last_top, top + 1)
+            elif key in (curses.KEY_LEFT, ord("h")):
+                left = max(0, left - 8)
+            elif key in (curses.KEY_RIGHT, ord("l")):
+                left = min(max_left, left + 8)
+            elif key == curses.KEY_PPAGE:
+                top = max(0, top - max_lines)
+            elif key == curses.KEY_NPAGE:
+                top = min(last_top, top + max_lines)
+            elif key in (curses.KEY_HOME, ord("g")):
+                top = 0
+                left = 0
+            elif key in (curses.KEY_END, ord("G")):
+                top = last_top
+            elif key in (ord("q"), ord("Q"), 27, curses.KEY_ENTER, 10, 13):
+                break
+            elif key == curses.KEY_RESIZE:
+                pass
+
     try:
-        subprocess.run(["stty", "sane"], stdin=sys.stdin, check=False)
-    except Exception:
-        pass
+        _with_screen(_run)
+    except KeyboardInterrupt:
+        pass  # Ctrl-C just closes the pager
+    except curses.error:
+        _degrade_to_text()
+        print(content)
+        _pause()
+
+
+@contextmanager
+def capture_output():
+    old_out, old_err = sys.stdout, sys.stderr
+    out, err = io.StringIO(), io.StringIO()
+    sys.stdout, sys.stderr = out, err
+    try:
+        yield out, err
+    finally:
+        sys.stdout, sys.stderr = old_out, old_err
+
+
+def _run_with_capture(title: str, func, *args, footer: str = "", **kwargs):
+    result = None
+    note = ""
+    with capture_output() as (out, err):
+        try:
+            result = func(*args, **kwargs)
+        except KeyboardInterrupt:
+            note = "[Cancelled]"
+        except Exception:
+            # A mode error must not escape as a raw traceback with the screen
+            # stuck in curses mode; page it (plus whatever was captured).
+            note = "[Error]\n" + traceback.format_exc().rstrip()
+    # With a session screen the mode's _TUIPbar drew into it and nothing needs
+    # tearing down. Without one (direct invocation) the pbar initscr()'d a
+    # screen of its own; end it before paging, even (especially) when the mode
+    # died mid-run.
+    if _SCREEN is None:
+        if _USE_CURSES:
+            try:
+                if not curses.isendwin():
+                    curses.endwin()
+            except curses.error:
+                pass
+        _reset_terminal()
+
+    text = ""
+    if note:
+        text += note + "\n"
+    if isinstance(result, str) and result:
+        text += result + "\n"
+
+    out_text = out.getvalue().strip()
+    if out_text:
+        text += out_text + "\n"
+
+    err_text = err.getvalue().strip()
+    if err_text:
+        text += "\n[Errors/Warnings]:\n" + err_text + "\n"
+
+    if footer and not note:
+        # The "Report written to ..." footer must not assert a file exists
+        # when the mode died or was cancelled before finishing.
+        text += "\n" + footer + "\n"
+
+    text = text.strip()
+    if text:
+        _tui_page(title, text)
+    else:
+        _pause()
+
+
