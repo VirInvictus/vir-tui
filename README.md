@@ -15,6 +15,16 @@ Powers [CalibreQuarry](https://github.com/VirInvictus/CalibreQuarry) and [Lattic
 - **Prompts**: Interactive inputs with input clearing (`ask_yn`, `prompt_int`, `prompt_out`).
 - **Capture**: `run_with_capture` wrapper for redirecting stdout/stderr into a temporary scrolling buffer while a background task runs, rendering a header/footer on top.
 
+## Support
+
+If vir-tui's useful to you and you'd like to chip in:
+
+- liberapay · [liberapay.com/bdkl](https://liberapay.com/bdkl/)
+- bitcoin
+  ```
+  bc1qkge6zr45tzqfwfmvma2ylumt6mg7wlwmhr05yv
+  ```
+
 ## License
 
 GPL-3.0-or-later.
