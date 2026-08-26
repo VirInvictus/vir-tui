@@ -86,6 +86,13 @@ def close_screen() -> None:
         pass
 
 
+def session_screen():
+    """The persistent curses screen owned by an open interactive session, or
+    None. Host apps publish it to their own widgets (progress boxes) so those
+    render into the session's screen instead of starting one of their own."""
+    return _SCREEN
+
+
 def _degrade_to_text() -> None:
     """A mid-session curses failure (terminal died, capability lost): suspend
     the screen and flip the whole session to the text fallback. endwin puts

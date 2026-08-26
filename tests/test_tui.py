@@ -25,3 +25,14 @@ def test_build_fallback():
     assert mapping["q"] is None
     assert mapping["1"] == (0, 1)  # Item 2
     assert mapping["2"] == (1, 0)  # Item 3
+
+
+def test_session_screen_reflects_state():
+    # No interactive session in tests: accessor mirrors the module state.
+    assert menu.session_screen() is menu._SCREEN
+    sentinel = object()
+    menu._SCREEN = sentinel
+    try:
+        assert menu.session_screen() is sentinel
+    finally:
+        menu._SCREEN = None
