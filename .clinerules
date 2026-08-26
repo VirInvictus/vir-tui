@@ -1,0 +1,18 @@
+<!-- .clinerules for vir-tui — converted from CLAUDE.md on 2026-08-25 during the Cline migration. -->
+<!-- The original CLAUDE.md is kept untouched alongside this file (provenance + deep reference). -->
+<!-- Claude Code machinery was neutralized: self-references point at this file; global rules are ~/.clinerules/. -->
+
+# vir-tui
+
+- **Domain**: Terminal UI rendering for VirInvictus CLI apps.
+- **Dependencies**: `stdlib` only. No dependencies are allowed in `pyproject.toml`.
+- **Formatting**: ANSI codes.
+
+Read `spec.md` before making changes.
+
+### Consumers
+Any breaking changes to `vir-tui` MUST be cascaded to the following applications that depend on it:
+1. `CalibreQuarry`
+2. `Lattice`
+
+- This is a generalized library. Do NOT hardcode domain menus. Pass them via `tui_select`.
