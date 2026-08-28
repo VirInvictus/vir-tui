@@ -94,6 +94,13 @@ def session_screen():
     return _SCREEN
 
 
+def text_mode() -> bool:
+    """True when the session runs without curses — no TTY, no curses module,
+    or a mid-session degrade. Hosts use it to pick text-only affordances
+    (e.g. printing an error line at a text menu instead of redrawing)."""
+    return not _USE_CURSES
+
+
 @contextmanager
 def interactive_session():
     """Own the persistent session screen for a host's interactive menu loop.

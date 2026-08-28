@@ -29,6 +29,7 @@ from .menu import (
     open_screen,
     close_screen,
     session_screen,
+    text_mode,
     ask,
     ask_yn,
     prompt_int,

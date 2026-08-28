@@ -1,5 +1,6 @@
 # 2.2.0 (2026-08-27)
 Phase 3 — consumer-driven primitives, from the cross-app TUI survey (CalibreQuarry, Lattice, Bindery).
+- **Feature**: `text_mode()` — public curses-status accessor (True when running without curses), so hosts stop poking the private `_USE_CURSES` global.
 - **Feature**: `progress_box()` / `ProgressBox` — first-class curses progress widget: session-screen-aware, throttled redraws, tqdm-like `update`/`set_description`/`close`, context-manager support, and a plain-text fallback (carriage-returned line on a tty; silent when piped) instead of starting a screen of its own. Replaces Lattice's hand-mirrored `_TUIPbar`. The `CP_*` color-pair constants are now public for hosts drawing their own widgets.
 - **Feature**: `interactive_session()` context manager owning the open-screen / degrade-to-text / close-screen boilerplate; KeyboardInterrupt is re-raised after cleanup so hosts keep mapping it to exit code 130. Adopts the duplicated `interactive_menu()` scaffolding from CalibreQuarry and Lattice.
 - **Feature**: Prompt primitives — `prompt_float(label, default, lo, hi)` with bounded re-asking, `prompt_path(label, default, must_exist)` with existence loops built in, `confirm(label, default, danger=True)` for destructive gates, and public `out_note(path)` (both consumers had copied the private `_out_note` verbatim).

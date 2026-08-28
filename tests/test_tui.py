@@ -41,6 +41,13 @@ def test_session_screen_reflects_state():
 # --- Phase 3 primitives -----------------------------------------------------
 
 
+def test_text_mode_reflects_fallback_flag(monkeypatch):
+    monkeypatch.setattr(menu, "_USE_CURSES", False)
+    assert menu.text_mode() is True
+    monkeypatch.setattr(menu, "_USE_CURSES", True)
+    assert menu.text_mode() is False
+
+
 def test_out_note_public_form(monkeypatch):
     monkeypatch.chdir("/tmp")
     assert menu.out_note("x.txt") == "Report written to /tmp/x.txt"
