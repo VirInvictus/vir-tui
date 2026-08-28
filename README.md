@@ -10,9 +10,11 @@ Powers [CalibreQuarry](https://github.com/VirInvictus/CalibreQuarry) and [Lattic
 
 ## Features
 
-- **GridMenu**: A 2D navigable menu system that reads raw TTY keystrokes (no `curses` required).
-- **Formatters**: Consistent `success`, `info`, `warn`, `error` styling across apps.
-- **Prompts**: Interactive inputs with input clearing (`ask_yn`, `prompt_int`, `prompt_out`).
+- **Menus**: full-screen arrow-key `tui_select` (sections, aliases, letter keys) with an automatic numbered text fallback when curses is unavailable; a scrollable, pannable results pager (`tui_page`) with `/` search and `n`/`N` match jumping.
+- **Progress**: `progress_box()` — a session-screen-aware curses progress box with a tqdm-like API and a pipe-safe text fallback.
+- **Sessions**: `interactive_session()` context manager owning the curses screen lifecycle (open, degrade, close, KeyboardInterrupt cleanup).
+- **Formatters**: consistent `success`, `info`, `warn`, `error` styling across apps.
+- **Prompts**: `ask`, `ask_yn`, `confirm`, `prompt_int`, `prompt_float`, `prompt_out`, `prompt_path`, plus `out_note` for "where did my report go" footers.
 - **Capture**: `run_with_capture` wrapper for redirecting stdout/stderr into a temporary scrolling buffer while a background task runs, rendering a header/footer on top.
 
 ## Support

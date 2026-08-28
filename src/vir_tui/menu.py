@@ -1,9 +1,10 @@
 import io
 import os
 import sys
+import time
 import traceback
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Self
 
 try:
     import curses
@@ -93,6 +94,31 @@ def session_screen():
     return _SCREEN
 
 
+@contextmanager
+def interactive_session():
+    """Own the persistent session screen for a host's interactive menu loop.
+
+    Opens the curses session (yielding None when the terminal can't support
+    one, with the whole session degraded to the text fallback) and always
+    closes it on exit. KeyboardInterrupt is re-raised after cleanup so hosts
+    keep translating it into their own exit code (conventionally 130) without
+    the terminal staying broken. Replaces the open_screen/try/finally/
+    close_screen boilerplate CalibreQuarry and Lattice each carried.
+    """
+    stdscr = open_screen()
+    if _USE_CURSES and stdscr is None:
+        _degrade_to_text()
+    try:
+        try:
+            yield stdscr
+        except KeyboardInterrupt:
+            if _SCREEN is None:
+                print()
+            raise
+    finally:
+        close_screen()
+
+
 def _degrade_to_text() -> None:
     """A mid-session curses failure (terminal died, capability lost): suspend
     the screen and flip the whole session to the text fallback. endwin puts
@@ -153,6 +179,12 @@ def _out_note(path: str | None) -> str:
     return f"Report written to {os.path.abspath(path)}" if path else ""
 
 
+def out_note(path: str | None) -> str:
+    """Public form of :func:`_out_note` — hosts used to copy this helper
+    verbatim because only the underscored name existed."""
+    return _out_note(path)
+
+
 def prompt_int(label: str, default: int) -> int:
     prompt = label
     while True:
@@ -161,6 +193,54 @@ def prompt_int(label: str, default: int) -> int:
             return int(s)
         except ValueError:
             prompt = f"{label} (not a number, try again)"
+
+
+def prompt_float(
+    label: str,
+    default: float,
+    lo: float | None = None,
+    hi: float | None = None,
+) -> float:
+    """Float prompt with optional inclusive bounds; re-asks with a reason on
+    non-numeric or out-of-range input. Esc still cancels (CancelledError)."""
+    prompt = label
+    while True:
+        s = ask(prompt, f"{default:g}").strip()
+        try:
+            val = float(s)
+        except ValueError:
+            prompt = f"{label} (not a number, try again)"
+            continue
+        if lo is not None and hi is not None and not lo <= val <= hi:
+            prompt = f"{label} (must be between {lo:g} and {hi:g})"
+            continue
+        if lo is not None and val < lo:
+            prompt = f"{label} (must be >= {lo:g})"
+            continue
+        if hi is not None and val > hi:
+            prompt = f"{label} (must be <= {hi:g})"
+            continue
+        return val
+
+
+def prompt_path(label: str, default: str = "", *, must_exist: bool = True) -> str:
+    """Path prompt: expands `~` and returns an absolute path. With
+    ``must_exist`` it re-asks (with a notice) until the path exists, so
+    hosts stop hand-rolling existence loops. Esc still cancels."""
+    prompt = label
+    while True:
+        raw = ask(prompt, default)
+        path = os.path.abspath(os.path.expanduser(raw))
+        if not must_exist or os.path.exists(path):
+            return path
+        notify(f"Not found: {path}")
+
+
+def confirm(label: str, default: bool = False, *, danger: bool = False) -> bool:
+    """Yes/no gate worded for destructive actions: ``danger`` prefixes the
+    label and defaults to No, so a bare Enter never destroys anything."""
+    text = f"DANGER — {label}" if danger else label
+    return ask_yn(text, "y" if default else "N")
 
 
 def notify(msg: str) -> None:
@@ -207,6 +287,16 @@ _CP_ITEM = 4
 _CP_SELECTED = 5
 _CP_HINT = 6
 
+# Public aliases: hosts rendering their own widgets into the session screen
+# (progress boxes, custom panels) use these instead of hand-mirroring the
+# private numeric ids, which would break silently if vir-tui restyled.
+CP_FRAME = _CP_FRAME
+CP_TITLE = _CP_TITLE
+CP_HEADER = _CP_HEADER
+CP_ITEM = _CP_ITEM
+CP_SELECTED = _CP_SELECTED
+CP_HINT = _CP_HINT
+
 
 def _init_tui_colors() -> None:
     """Set up curses color pairs for the TUI menus. Non-fatal: a terminal
@@ -235,6 +325,135 @@ def _curs_set(visibility: int) -> None:
 
 _TUI_BOX_W = 46
 _TUI_INNER = _TUI_BOX_W - 2  # chars between the two ║ borders
+
+
+class ProgressBox:
+    """Curses progress box matching the TUI style, with a tqdm-like API.
+
+    Draws into the persistent session screen when an interactive session owns
+    one; without one it prints plain carriage-returned text lines instead of
+    starting a screen of its own, so pipes and redirects stay clean. Redraws
+    are throttled — a full-screen erase per item on a 100k-item scan is visible
+    flicker and wasted work — and the final update always draws. Progress is
+    cosmetic: every draw failure is swallowed, never fatal to the mode.
+    """
+
+    _MIN_REDRAW_S = 0.1
+
+    def __init__(self, total: int, desc: str = ""):
+        self.total = max(0, int(total))
+        self.desc = desc
+        self.current = 0
+        self._last_draw = 0.0
+        self._closed = False
+        self.draw()
+
+    def set_description(self, desc: str) -> None:
+        """tqdm-parity alias for changing the header text mid-run."""
+        self.desc = desc
+        self.draw()
+
+    def update(self, n: int = 1) -> None:
+        if self._closed:
+            return
+        self.current += n
+        if (
+            self.current >= self.total
+            or time.monotonic() - self._last_draw >= self._MIN_REDRAW_S
+        ):
+            self.draw()
+
+    def close(self) -> None:
+        """Release the display. The session screen is the session's to tear
+        down (the next menu redraw erases the box); the text fallback just
+        ends its in-place line."""
+        if self._closed:
+            return
+        self._closed = True
+        if _SCREEN is None and sys.stdout.isatty():
+            try:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+            except OSError:
+                pass
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def _text_line(self) -> str:
+        percent = self.current / max(1, self.total)
+        bar_len = 30
+        filled = int(bar_len * percent)
+        bar = "█" * filled + "░" * (bar_len - filled)
+        return (
+            f"{self.desc}: |{bar}| {self.current}/{self.total} ({percent * 100:.0f}%)"
+        )
+
+    def draw(self) -> None:
+        self._last_draw = time.monotonic()
+        scr = _SCREEN
+        try:
+            if scr is not None:
+                self._draw_curses(scr)
+            elif sys.stdout.isatty():
+                end = "\n" if self.current >= self.total else ""
+                sys.stdout.write("\r" + self._text_line() + end)
+                sys.stdout.flush()
+        except Exception:
+            # curses.error, or curses missing entirely: progress is cosmetic.
+            pass
+
+    def _draw_curses(self, s) -> None:
+        import curses
+
+        box_w = _TUI_BOX_W
+        inner = box_w - 2
+        bx = max(0, (s.getmaxyx()[1] - box_w) // 2)
+        y = max(0, (s.getmaxyx()[0] - 6) // 2)
+        fa = curses.color_pair(_CP_FRAME)
+
+        s.erase()
+        _safe_addstr(s, y, bx, "╔" + "═" * inner + "╗", fa)
+        _safe_addstr(s, y + 1, bx, "║", fa)
+        _safe_addstr(
+            s,
+            y + 1,
+            bx + 1,
+            f" {self.desc}".ljust(inner),
+            curses.color_pair(_CP_HEADER) | curses.A_BOLD,
+        )
+        _safe_addstr(s, y + 1, bx + box_w - 1, "║", fa)
+        _safe_addstr(s, y + 2, bx, "╠" + "═" * inner + "╣", fa)
+
+        percent = self.current / max(1, self.total)
+        bar_len = inner - 10
+        filled = int(bar_len * percent)
+        bar = "█" * filled + "░" * (bar_len - filled)
+        pct_str = f"{int(percent * 100):3d}%"
+
+        _safe_addstr(s, y + 3, bx, "║", fa)
+        _safe_addstr(s, y + 3, bx + 1, f" {bar} {pct_str} ".ljust(inner))
+        _safe_addstr(s, y + 3, bx + box_w - 1, "║", fa)
+        info = f" {self.current}/{self.total} · Ctrl-C cancels"
+        _safe_addstr(s, y + 4, bx, "║", fa)
+        _safe_addstr(s, y + 4, bx + 1, info[:inner].ljust(inner))
+        _safe_addstr(s, y + 4, bx + box_w - 1, "║", fa)
+        _safe_addstr(s, y + 5, bx, "╚" + "═" * inner + "╝", fa)
+        s.refresh()
+
+
+def progress_box(total: int, desc: str = "") -> ProgressBox:
+    """Factory matching tqdm's ``(total, desc)`` shape for drop-in use::
+
+    with vir_tui.progress_box(len(items), "Scanning") as bar:
+        for item in items:
+            ...
+            bar.update()
+    """
+    return ProgressBox(total, desc)
 
 
 def _safe_addstr(stdscr, y: int, x: int, text: str, attr: int) -> None:
@@ -564,6 +783,28 @@ def tui_select(
     return fallback_input(f"  Select [1-{max_n}/q]: ", mapping)
 
 
+def _match_lines(
+    lines: list[str], query: str, start: int = 0, reverse: bool = False
+) -> int | None:
+    """Index of the first line containing ``query`` (case-insensitive),
+    searching forward from ``start`` — or backward when ``reverse`` — and
+    wrapping around once. None when there is no match. A pure helper so
+    pager search is testable without a curses session."""
+    q = query.casefold()
+    if not q or not lines:
+        return None
+    n = len(lines)
+    start = max(0, min(start, n - 1))
+    if reverse:
+        order = list(range(start, -1, -1)) + list(range(n - 1, start, -1))
+    else:
+        order = list(range(start, n)) + list(range(start))
+    for i in order:
+        if q in lines[i].casefold():
+            return i
+    return None
+
+
 def tui_page(title: str, content: str) -> None:
     if not _USE_CURSES:
         print(content)
@@ -578,6 +819,7 @@ def tui_page(title: str, content: str) -> None:
         _curs_set(0)
         top = 0
         left = 0
+        query = ""
         while True:
             stdscr.erase()
             h, w = stdscr.getmaxyx()
@@ -606,7 +848,9 @@ def tui_page(title: str, content: str) -> None:
             )
             _safe_addstr(stdscr, h - 2, bx, "╚" + "═" * (content_w - 2) + "╝", fa)
 
-            hints = "↑↓ Scroll  ←→ Pan  PgUp/Dn  g/G Top/Bottom  q/Esc Close"
+            hints = (
+                "↑↓ Scroll  ←→ Pan  / Search  n/N Match  g/G Top/Bottom  q/Esc Close"
+            )
             _safe_addstr(
                 stdscr,
                 h - 1,
@@ -654,6 +898,21 @@ def tui_page(title: str, content: str) -> None:
                 left = 0
             elif key in (curses.KEY_END, "G"):
                 top = last_top
+            elif key == "/":
+                got = _tui_prompt_str("Search", query)
+                if got is not None and got.strip():
+                    query = got.strip()
+                    hit = _match_lines(lines, query, top)
+                    if hit is not None:
+                        top = hit
+            elif key == "n" and query:
+                hit = _match_lines(lines, query, min(top + 1, len(lines) - 1))
+                if hit is not None:
+                    top = hit
+            elif key == "N" and query:
+                hit = _match_lines(lines, query, max(top - 1, 0), reverse=True)
+                if hit is not None:
+                    top = hit
             elif key in ("q", "Q", 27, "\x1b", curses.KEY_ENTER, 10, 13, "\n", "\r"):
                 break
             elif key == curses.KEY_RESIZE:

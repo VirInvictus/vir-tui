@@ -36,3 +36,127 @@ def test_session_screen_reflects_state():
         assert menu.session_screen() is sentinel
     finally:
         menu._SCREEN = None
+
+
+# --- Phase 3 primitives -----------------------------------------------------
+
+
+def test_out_note_public_form(monkeypatch):
+    monkeypatch.chdir("/tmp")
+    assert menu.out_note("x.txt") == "Report written to /tmp/x.txt"
+    assert menu.out_note(None) == ""
+    assert menu.out_note("") == ""
+
+
+def test_prompt_float_converts_and_bounds(monkeypatch):
+    answers = iter(["3.5"])
+    monkeypatch.setattr(menu, "ask", lambda label, default: next(answers))
+    assert menu.prompt_float("Rating", 0.0, lo=0, hi=5) == 3.5
+
+    # Non-number and out-of-range inputs re-ask with the reason appended.
+    answers = iter(["abc", "7", "4.5"])
+    seen = []
+    monkeypatch.setattr(
+        menu, "ask", lambda label, default: (seen.append(label), next(answers))[1]
+    )
+    assert menu.prompt_float("Rating", 0.0, lo=0, hi=5) == 4.5
+    assert "not a number" in seen[1]
+    assert "between 0 and 5" in seen[2]
+
+
+def test_prompt_path_loops_until_exists(monkeypatch, tmp_path):
+    target = tmp_path / "real.txt"
+    target.write_text("x")
+    answers = iter([str(tmp_path / "missing.txt"), str(target)])
+    monkeypatch.setattr(menu, "ask", lambda label, default: next(answers))
+    got = menu.prompt_path("Path")
+    assert got == str(target)
+
+    # must_exist=False returns the (absolute) path immediately.
+    monkeypatch.setattr(menu, "ask", lambda label, default: str(tmp_path / "nope"))
+    assert menu.prompt_path("Path", must_exist=False) == str(tmp_path / "nope")
+
+
+def test_confirm_wording_and_default(monkeypatch):
+    calls = []
+
+    def fake_ask_yn(label, default):
+        calls.append((label, default))
+        return default.lower().startswith("y")
+
+    monkeypatch.setattr(menu, "ask_yn", fake_ask_yn)
+    assert menu.confirm("Permanently delete book 7", danger=True) is False
+    assert calls[-1][0].startswith("DANGER — ")
+    assert calls[-1][1] == "N"
+    assert menu.confirm("Keep going", default=True) is True
+    assert calls[-1][0] == "Keep going"
+    assert calls[-1][1] == "y"
+
+
+def test_interactive_session_closes_and_degrades(monkeypatch):
+    closed = []
+    monkeypatch.setattr(menu, "open_screen", lambda: None)
+    monkeypatch.setattr(menu, "close_screen", lambda: closed.append(True))
+    with menu.interactive_session() as scr:
+        assert scr is None  # degrade path: no curses screen
+    assert closed == [True]
+
+    # A real screen is yielded and closed afterwards.
+    sentinel = object()
+    monkeypatch.setattr(menu, "open_screen", lambda: sentinel)
+    with menu.interactive_session() as scr:
+        assert scr is sentinel
+    assert len(closed) == 2
+
+
+def test_interactive_session_reraises_keyboardinterrupt(monkeypatch):
+    monkeypatch.setattr(menu, "open_screen", lambda: None)
+    monkeypatch.setattr(menu, "close_screen", lambda: None)
+    try:
+        with menu.interactive_session():
+            raise KeyboardInterrupt
+    except KeyboardInterrupt:
+        pass  # hosts translate this into exit code 130 themselves
+    else:
+        raise AssertionError("KeyboardInterrupt must propagate")
+
+
+def test_match_lines_forward_backward_wrap():
+    lines = ["alpha", "beta gamma", "Gamma two", "delta"]
+    assert menu._match_lines(lines, "gamma") == 1  # first hit from the top
+    assert menu._match_lines(lines, "gamma", start=2) == 2
+    assert menu._match_lines(lines, "gamma", start=3) == 1  # wraps once
+    assert menu._match_lines(lines, "gamma", start=1, reverse=True) == 1
+    # Reverse search includes the start line itself: "Gamma two" matches at 2.
+    assert menu._match_lines(lines, "gamma", start=2, reverse=True) == 2
+    assert menu._match_lines(lines, "gamma", start=0, reverse=True) == 2  # wraps back
+    assert menu._match_lines(lines, "zebra") is None
+    assert menu._match_lines(lines, "") is None
+    # Case-insensitive in both directions.
+    assert menu._match_lines(lines, "BETA") == 1
+
+
+def test_progressbox_text_fallback_is_safe(monkeypatch, capsys):
+    # No session screen and a non-tty stdout (pytest capture): drawing must
+    # be a no-op that never raises, and close() stays idempotent.
+    monkeypatch.setattr(menu, "_SCREEN", None)
+    bar = menu.ProgressBox(10, "Scanning")
+    bar.update(4)
+    bar.update()  # throttled updates must not blow up either
+    bar.close()
+    bar.close()  # idempotent
+    bar.update()  # after close: ignored
+    assert bar.current == 5
+    captured = capsys.readouterr()
+    # Non-tty stdout: nothing written (writes would corrupt pipes/redirects).
+    assert captured.out == ""
+
+
+def test_progressbox_counts_and_context_manager(monkeypatch):
+    monkeypatch.setattr(menu, "_SCREEN", None)
+    with menu.progress_box(3, "Work") as bar:
+        bar.update()
+        bar.update()
+        bar.update()
+    assert bar.current == 3
+    assert bar._closed
