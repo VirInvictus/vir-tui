@@ -435,11 +435,23 @@ class ProgressBox:
         pct_str = f"{int(percent * 100):3d}%"
 
         _safe_addstr(s, y + 3, bx, "║", fa)
-        _safe_addstr(s, y + 3, bx + 1, f" {bar} {pct_str} ".ljust(inner))
+        _safe_addstr(
+            s,
+            y + 3,
+            bx + 1,
+            f" {bar} {pct_str} ".ljust(inner),
+            curses.color_pair(_CP_ITEM),
+        )
         _safe_addstr(s, y + 3, bx + box_w - 1, "║", fa)
         info = f" {self.current}/{self.total} · Ctrl-C cancels"
         _safe_addstr(s, y + 4, bx, "║", fa)
-        _safe_addstr(s, y + 4, bx + 1, info[:inner].ljust(inner))
+        _safe_addstr(
+            s,
+            y + 4,
+            bx + 1,
+            info[:inner].ljust(inner),
+            curses.color_pair(_CP_ITEM),
+        )
         _safe_addstr(s, y + 4, bx + box_w - 1, "║", fa)
         _safe_addstr(s, y + 5, bx, "╚" + "═" * inner + "╝", fa)
         s.refresh()
