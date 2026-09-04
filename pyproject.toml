@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vir-tui"
-version = "2.2.0"
+version = "2.3.0"
 description = "A lightweight, terminal UI primitive library for the VirInvictus CLI toolchain."
 readme = "README.md"
 requires-python = ">=3.14"

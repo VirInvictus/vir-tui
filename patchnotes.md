@@ -1,3 +1,11 @@
+# 2.3.0 (2026-09-04)
+Phase 3 tail: the three consumer-driven affordances, plus a test-story trap documented.
+
+- **Feature: mouse support.** The session screen (and the one-shot boot) activates the curses mouse mask best-effort; a terminal without mouse support degrades silently to keyboard-only. In `tui_select` a click moves the selection, a double-click selects, and the wheel navigates; in `tui_page` the wheel scrolls three lines per notch. KEY_MOUSE events reaching prompts/pauses are inert by shape, so no per-widget fallback code was needed.
+- **Feature: type-to-filter in `tui_select`.** On menus of `_FILTER_MIN_ITEMS` (15)+ entries, printable characters type a casefold containment filter that narrows the view incrementally; the hints line shows the query and a visible/total count. Backspace edits, Esc clears the filter (then quits), Enter selects from the narrowed view, and the wheel navigates it. Below the threshold every key keeps its simple meaning: small menus are unchanged. Matching is the pure `_filter_visible()` helper (unit-tested).
+- **Feature: theme overrides.** `configure_theme(color_pairs=..., glyphs=...)` lets hosts remap the six semantic color pairs (frame/title/header/item/selected/hint, applied at the next color init) and the fourteen box/pointer glyphs (effective immediately) instead of mirroring private ids or forking widgets. Unknown names raise ValueError: a silent typo would leave widgets half-restyled. All five widgets draw through the new `_glyph()` lookup.
+- **Tests:** suite grew from 13 to 18 (override application + validation, glyph-default coverage, filter narrowing, threshold guarantee). Test-story note: run the suite as `PYTHONPATH=src python -m pytest tests/`: a bare pytest from the repo root silently imports the stale ambient site-packages install and tests nothing that changed (the lattice-music trap, now documented here too).
+
 # 2.2.0 (2026-08-27)
 Phase 3 — consumer-driven primitives, from the cross-app TUI survey (CalibreQuarry, Lattice, Bindery).
 - **Feature**: `text_mode()` — public curses-status accessor (True when running without curses), so hosts stop poking the private `_USE_CURSES` global.

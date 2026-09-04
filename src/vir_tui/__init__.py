@@ -17,6 +17,7 @@ from .menu import (
     CP_SELECTED,
     CP_TITLE,
     ProgressBox,
+    configure_theme,
     confirm,
     interactive_session,
     out_note,

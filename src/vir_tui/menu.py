@@ -38,6 +38,7 @@ def _with_screen(fn):
 
     def _boot(stdscr):
         _init_tui_colors()
+        _enable_mouse(stdscr)
         return fn(stdscr)
 
     return curses.wrapper(_boot)
@@ -54,6 +55,7 @@ def open_screen():
         curses.cbreak()
         stdscr.keypad(True)
         _init_tui_colors()
+        _enable_mouse(stdscr)
         _SCREEN = stdscr
         _USE_CURSES = True
         return stdscr
@@ -304,21 +306,119 @@ CP_ITEM = _CP_ITEM
 CP_SELECTED = _CP_SELECTED
 CP_HINT = _CP_HINT
 
+# Theme overrides: hosts remap color pairs and box glyphs per app via
+# configure_theme() instead of hand-mirroring ids or forking widgets.
+
+_PAIR_NAMES = ("frame", "title", "header", "item", "selected", "hint")
+_PAIR_OVERRIDES: dict[str, tuple[int, int]] = {}
+
+_GLYPH_DEFAULTS = {
+    "tl": "╔",
+    "tr": "╗",
+    "bl": "╚",
+    "br": "╝",
+    "join_l": "╠",
+    "join_r": "╣",
+    "soft_l": "╟",
+    "soft_r": "╢",
+    "hline": "═",
+    "hline_light": "─",
+    "vline": "║",
+    "pointer": "►",
+    "block": "█",
+    "block_light": "░",
+}
+_GLYPHS: dict[str, str] = {}
+
+
+def configure_theme(
+    *,
+    color_pairs: dict[str, tuple[int, int]] | None = None,
+    glyphs: dict[str, str] | None = None,
+) -> None:
+    """Host-level theme remapping; call once at startup, before the first
+    widget runs.
+
+    ``color_pairs`` maps semantic pair names — "frame", "title", "header",
+    "item", "selected", "hint" — to ``(fg, bg)`` curses color constants
+    (e.g. ``(curses.COLOR_CYAN, -1)``), applied at the next color
+    initialization (the next screen open). ``glyphs`` maps glyph names —
+    "tl", "tr", "bl", "br", "join_l", "join_r", "soft_l", "soft_r",
+    "hline", "hline_light", "vline", "pointer", "block", "block_light" —
+    to characters, effective immediately. Unknown names raise ValueError:
+    a silent typo would leave a host's widgets half-restyled.
+    """
+    for name, pair in (color_pairs or {}).items():
+        if name not in _PAIR_NAMES:
+            raise ValueError(
+                f"unknown color pair {name!r}; expected one of {_PAIR_NAMES}"
+            )
+        _PAIR_OVERRIDES[name] = pair
+    for name, ch in (glyphs or {}).items():
+        if name not in _GLYPH_DEFAULTS:
+            raise ValueError(
+                f"unknown glyph {name!r}; expected one of {sorted(_GLYPH_DEFAULTS)}"
+            )
+        _GLYPHS[name] = ch
+
+
+def _glyph(name: str) -> str:
+    return _GLYPHS.get(name) or _GLYPH_DEFAULTS[name]
+
 
 def _init_tui_colors() -> None:
     """Set up curses color pairs for the TUI menus. Non-fatal: a terminal
-    without color support gets a monochrome TUI instead of a dead one."""
+    without color support gets a monochrome TUI instead of a dead one.
+    configure_theme() overrides apply here."""
+    defaults = {
+        "frame": (curses.COLOR_CYAN, -1),
+        "title": (curses.COLOR_WHITE, -1),
+        "header": (curses.COLOR_YELLOW, -1),
+        "item": (curses.COLOR_WHITE, -1),
+        "selected": (curses.COLOR_BLACK, curses.COLOR_CYAN),
+        "hint": (curses.COLOR_WHITE, -1),
+    }
     try:
         curses.start_color()
         curses.use_default_colors()
-        curses.init_pair(_CP_FRAME, curses.COLOR_CYAN, -1)
-        curses.init_pair(_CP_TITLE, curses.COLOR_WHITE, -1)
-        curses.init_pair(_CP_HEADER, curses.COLOR_YELLOW, -1)
-        curses.init_pair(_CP_ITEM, curses.COLOR_WHITE, -1)
-        curses.init_pair(_CP_SELECTED, curses.COLOR_BLACK, curses.COLOR_CYAN)
-        curses.init_pair(_CP_HINT, curses.COLOR_WHITE, -1)
+        for cp, name in (
+            (_CP_FRAME, "frame"),
+            (_CP_TITLE, "title"),
+            (_CP_HEADER, "header"),
+            (_CP_ITEM, "item"),
+            (_CP_SELECTED, "selected"),
+            (_CP_HINT, "hint"),
+        ):
+            fg, bg = _PAIR_OVERRIDES.get(name, defaults[name])
+            curses.init_pair(cp, fg, bg)
     except curses.error:
         pass
+
+
+def _enable_mouse(stdscr) -> None:
+    """Best-effort mouse activation (click-to-select, wheel events). A
+    terminal or curses build without mouse support degrades to keyboard-only."""
+    try:
+        curses.mousemask(curses.ALL_MOUSE_EVENTS)
+    except curses.error:
+        pass
+
+
+_FILTER_MIN_ITEMS = 15
+"""Type-to-filter arms at this many items: below it every key keeps its
+simple meaning (``q`` quits, letters do nothing) and a filter would be
+noise."""
+
+
+def _filter_visible(
+    flat: list[tuple[int, int, str]], query: str
+) -> list[tuple[int, int, str]]:
+    """The flat ``(si, ii, label)`` entries whose label casefold-contains
+    ``query``. Pure so type-to-filter is testable without a curses session."""
+    if not query:
+        return list(flat)
+    q = query.casefold()
+    return [e for e in flat if q in e[2].casefold()]
 
 
 def _curs_set(visibility: int) -> None:
@@ -423,8 +523,10 @@ class ProgressBox:
         fa = curses.color_pair(_CP_FRAME)
 
         s.erase()
-        _safe_addstr(s, y, bx, "╔" + "═" * inner + "╗", fa)
-        _safe_addstr(s, y + 1, bx, "║", fa)
+        _safe_addstr(
+            s, y, bx, _glyph("tl") + _glyph("hline") * inner + _glyph("tr"), fa
+        )
+        _safe_addstr(s, y + 1, bx, _glyph("vline"), fa)
         _safe_addstr(
             s,
             y + 1,
@@ -432,8 +534,14 @@ class ProgressBox:
             f" {self.desc}".ljust(inner),
             curses.color_pair(_CP_HEADER) | curses.A_BOLD,
         )
-        _safe_addstr(s, y + 1, bx + box_w - 1, "║", fa)
-        _safe_addstr(s, y + 2, bx, "╠" + "═" * inner + "╣", fa)
+        _safe_addstr(s, y + 1, bx + box_w - 1, _glyph("vline"), fa)
+        _safe_addstr(
+            s,
+            y + 2,
+            bx,
+            _glyph("join_l") + _glyph("hline") * inner + _glyph("join_r"),
+            fa,
+        )
 
         percent = self.current / max(1, self.total)
         bar_len = inner - 10
@@ -441,7 +549,7 @@ class ProgressBox:
         bar = "█" * filled + "░" * (bar_len - filled)
         pct_str = f"{int(percent * 100):3d}%"
 
-        _safe_addstr(s, y + 3, bx, "║", fa)
+        _safe_addstr(s, y + 3, bx, _glyph("vline"), fa)
         _safe_addstr(
             s,
             y + 3,
@@ -449,9 +557,9 @@ class ProgressBox:
             f" {bar} {pct_str} ".ljust(inner),
             curses.color_pair(_CP_ITEM),
         )
-        _safe_addstr(s, y + 3, bx + box_w - 1, "║", fa)
+        _safe_addstr(s, y + 3, bx + box_w - 1, _glyph("vline"), fa)
         info = f" {self.current}/{self.total} · Ctrl-C cancels"
-        _safe_addstr(s, y + 4, bx, "║", fa)
+        _safe_addstr(s, y + 4, bx, _glyph("vline"), fa)
         _safe_addstr(
             s,
             y + 4,
@@ -459,8 +567,10 @@ class ProgressBox:
             info[:inner].ljust(inner),
             curses.color_pair(_CP_ITEM),
         )
-        _safe_addstr(s, y + 4, bx + box_w - 1, "║", fa)
-        _safe_addstr(s, y + 5, bx, "╚" + "═" * inner + "╝", fa)
+        _safe_addstr(s, y + 4, bx + box_w - 1, _glyph("vline"), fa)
+        _safe_addstr(
+            s, y + 5, bx, _glyph("bl") + _glyph("hline") * inner + _glyph("br"), fa
+        )
         s.refresh()
 
 
@@ -488,33 +598,51 @@ def _tui_select(
     sections: list,
     hints: str = "\u2191\u2193 Navigate  \u23ce Select  q Quit",
 ) -> tuple | None:
-    """Full-screen arrow-key menu using curses."""
+    """Full-screen arrow-key menu using curses.
+
+    On menus of ``_FILTER_MIN_ITEMS``+ entries, printable characters type a
+    filter that narrows the view incrementally (Esc clears it, then Esc
+    quits; Enter still selects from the narrowed view). With mouse support,
+    a click moves the selection, a double-click selects, and the wheel
+    scrolls."""
     BOX_W = _TUI_BOX_W
     INNER = _TUI_INNER
 
-    flat: list[tuple[int, int]] = []
+    flat: list[tuple[int, int, str]] = []
     for si, (_, items) in enumerate(sections):
-        for ii in range(len(items)):
-            flat.append((si, ii))
+        for ii, label in enumerate(items):
+            flat.append((si, ii, label))
+    filter_on = len(flat) >= _FILTER_MIN_ITEMS
 
-    def _draw(stdscr, cur: int) -> None:
+    def _draw(stdscr, cur: int, visible, query: str) -> dict[int, int]:
+        """Draw the (possibly narrowed) menu; returns {screen row: visible
+        index} for mouse hit-testing."""
+        row_map: dict[int, int] = {}
+        vis_by_si: dict[int, list[int]] = {}
+        for vi, (si, _ii, _label) in enumerate(visible):
+            vis_by_si.setdefault(si, []).append(vi)
+
         stdscr.erase()
         h, w = stdscr.getmaxyx()
         bx = max(0, (w - BOX_W) // 2)
         fa = curses.color_pair(_CP_FRAME)
 
         box_h = 3
-        sel_row = 3  # offset of the selected item from the box top
-        idx0 = 0
-        for si, (hdr, items) in enumerate(sections):
-            if si > 0:
+        sel_row = 3
+        first = True
+        for si, (hdr, _items) in enumerate(sections):
+            vis = vis_by_si.get(si)
+            if not vis:
+                continue
+            if not first:
                 box_h += 1
+            first = False
             if hdr:
                 box_h += 1
-            if idx0 <= cur < idx0 + len(items):
-                sel_row = box_h + (cur - idx0)
-            idx0 += len(items)
-            box_h += len(items)
+            for vi in vis:
+                if vi == cur:
+                    sel_row = box_h
+                box_h += 1
         box_h += 1
 
         y = max(0, (h - box_h - 2) // 2)
@@ -523,10 +651,12 @@ def _tui_select(
             # row stays visible (rows scrolled off the top just don't draw).
             y = (h - 2) - sel_row
 
-        _safe_addstr(stdscr, y, bx, "\u2554" + "\u2550" * INNER + "\u2557", fa)
+        _safe_addstr(
+            stdscr, y, bx, _glyph("tl") + _glyph("hline") * INNER + _glyph("tr"), fa
+        )
         y += 1
 
-        _safe_addstr(stdscr, y, bx, "\u2551", fa)
+        _safe_addstr(stdscr, y, bx, _glyph("vline"), fa)
         _safe_addstr(
             stdscr,
             y,
@@ -534,21 +664,38 @@ def _tui_select(
             f" {title:^{INNER - 2}} ",
             curses.color_pair(_CP_TITLE) | curses.A_BOLD,
         )
-        _safe_addstr(stdscr, y, bx + BOX_W - 1, "\u2551", fa)
+        _safe_addstr(stdscr, y, bx + BOX_W - 1, _glyph("vline"), fa)
         y += 1
 
-        _safe_addstr(stdscr, y, bx, "\u2560" + "\u2550" * INNER + "\u2563", fa)
+        _safe_addstr(
+            stdscr,
+            y,
+            bx,
+            _glyph("join_l") + _glyph("hline") * INNER + _glyph("join_r"),
+            fa,
+        )
         y += 1
 
         idx = 0
-        for si, (hdr, items) in enumerate(sections):
-            if si > 0:
-                _safe_addstr(stdscr, y, bx, "\u255f" + "\u2500" * INNER + "\u2562", fa)
+        first = True
+        for si, (hdr, _items) in enumerate(sections):
+            vis = vis_by_si.get(si)
+            if not vis:
+                continue
+            if not first:
+                _safe_addstr(
+                    stdscr,
+                    y,
+                    bx,
+                    _glyph("soft_l") + _glyph("hline_light") * INNER + _glyph("soft_r"),
+                    fa,
+                )
                 y += 1
+            first = False
 
             if hdr:
                 content = f"  {hdr}" + " " * (INNER - len(hdr) - 2)
-                _safe_addstr(stdscr, y, bx, "\u2551", fa)
+                _safe_addstr(stdscr, y, bx, _glyph("vline"), fa)
                 _safe_addstr(
                     stdscr,
                     y,
@@ -556,48 +703,103 @@ def _tui_select(
                     content,
                     curses.color_pair(_CP_HEADER) | curses.A_BOLD,
                 )
-                _safe_addstr(stdscr, y, bx + BOX_W - 1, "\u2551", fa)
+                _safe_addstr(stdscr, y, bx + BOX_W - 1, _glyph("vline"), fa)
                 y += 1
 
-            for _ii, label in enumerate(items):
-                is_sel = idx == cur
+            for vi in vis:
+                _si, _ii, label = visible[vi]
+                is_sel = vi == cur
                 if is_sel:
-                    text = f" \u25ba {label}"
+                    text = f" {_glyph('pointer')} {label}"
                     attr = curses.color_pair(_CP_SELECTED) | curses.A_BOLD
                 else:
                     text = f"   {label}"
                     attr = curses.color_pair(_CP_ITEM)
                 padded = text + " " * max(0, INNER - len(text))
-                _safe_addstr(stdscr, y, bx, "\u2551", fa)
+                _safe_addstr(stdscr, y, bx, _glyph("vline"), fa)
                 _safe_addstr(stdscr, y, bx + 1, padded[:INNER], attr)
-                _safe_addstr(stdscr, y, bx + BOX_W - 1, "\u2551", fa)
+                _safe_addstr(stdscr, y, bx + BOX_W - 1, _glyph("vline"), fa)
+                row_map[y] = vi
                 y += 1
                 idx += 1
 
-        _safe_addstr(stdscr, y, bx, "\u255a" + "\u2550" * INNER + "\u255d", fa)
+        _safe_addstr(
+            stdscr, y, bx, _glyph("bl") + _glyph("hline") * INNER + _glyph("br"), fa
+        )
         y += 2
 
-        hx = max(0, (w - len(hints)) // 2)
-        _safe_addstr(stdscr, y, hx, hints, curses.color_pair(_CP_HINT) | curses.A_DIM)
+        if filter_on and query:
+            hints_line = (
+                f"/{query}  {len(visible)}/{len(flat)}  ⌫ Edit  Esc Clear  ⏎ Select"
+            )
+        elif filter_on:
+            hints_line = f"{hints}  type to filter"
+        else:
+            hints_line = hints
+        hx = max(0, (w - len(hints_line)) // 2)
+        _safe_addstr(
+            stdscr, y, hx, hints_line, curses.color_pair(_CP_HINT) | curses.A_DIM
+        )
 
         stdscr.refresh()
+        return row_map
 
     def _run(stdscr) -> tuple | None:
         _curs_set(0)
         cur = 0
+        query = ""
+        visible = _filter_visible(flat, query)
         while True:
-            _draw(stdscr, cur)
+            row_map = _draw(stdscr, cur, visible, query)
             key = stdscr.get_wch()
-            if key in (curses.KEY_UP, "k"):
-                cur = (cur - 1) % len(flat)
+            if key == curses.KEY_MOUSE:
+                try:
+                    _mid, _mx, my, _z, bstate = curses.getmouse()
+                except curses.error:
+                    continue
+                hit = row_map.get(my)
+                if hit is None:
+                    continue
+                if bstate & curses.BUTTON1_DOUBLE_CLICKED:
+                    return visible[hit][:2]
+                if bstate & curses.BUTTON1_CLICKED:
+                    cur = hit
+                elif bstate & curses.BUTTON4_PRESSED:
+                    cur = (cur - 1) % max(1, len(visible))
+                elif bstate & curses.BUTTON5_PRESSED:
+                    cur = (cur + 1) % max(1, len(visible))
+            elif key in (curses.KEY_UP, "k"):
+                if visible:
+                    cur = (cur - 1) % len(visible)
             elif key in (curses.KEY_DOWN, "j"):
-                cur = (cur + 1) % len(flat)
+                if visible:
+                    cur = (cur + 1) % len(visible)
             elif key in (curses.KEY_ENTER, 10, 13, "\n", "\r"):
-                return flat[cur]
-            elif key in ("q", "Q", 27, "\x1b"):
+                if visible:
+                    return visible[cur][:2]
+            elif key in (27, "\x1b"):
+                if query:
+                    query = ""
+                    cur = 0
+                else:
+                    return None
+            elif key in (curses.KEY_BACKSPACE, 127, 8, "\x7f", "\x08"):
+                if query:
+                    query = query[:-1]
+                    cur = 0
+                    visible = _filter_visible(flat, query)
+            elif key in ("q", "Q") and not query:
                 return None
             elif key == curses.KEY_RESIZE:
                 pass
+            elif filter_on and isinstance(key, str) and key.isprintable():
+                if key.isspace() and not query:
+                    continue  # a leading space filters nothing
+                query += key
+                cur = 0
+                visible = _filter_visible(flat, query)
+            if visible and cur >= len(visible):
+                cur = len(visible) - 1
 
     try:
         return _with_screen(_run)
@@ -627,12 +829,14 @@ def _tui_prompt_str(label: str, default: str | None) -> str | None:
 
             y = max(0, (h - 8) // 2)
 
-            _safe_addstr(stdscr, y, bx, "\u2554" + "\u2550" * INNER + "\u2557", fa)
+            _safe_addstr(
+                stdscr, y, bx, _glyph("tl") + _glyph("hline") * INNER + _glyph("tr"), fa
+            )
             y += 1
 
             lbl = f"  {label}"
             padded_lbl = lbl + " " * max(0, INNER - len(lbl))
-            _safe_addstr(stdscr, y, bx, "\u2551", fa)
+            _safe_addstr(stdscr, y, bx, _glyph("vline"), fa)
             _safe_addstr(
                 stdscr,
                 y,
@@ -640,10 +844,16 @@ def _tui_prompt_str(label: str, default: str | None) -> str | None:
                 padded_lbl[:INNER],
                 curses.color_pair(_CP_HEADER) | curses.A_BOLD,
             )
-            _safe_addstr(stdscr, y, bx + BOX_W - 1, "\u2551", fa)
+            _safe_addstr(stdscr, y, bx + BOX_W - 1, _glyph("vline"), fa)
             y += 1
 
-            _safe_addstr(stdscr, y, bx, "\u255f" + "\u2500" * INNER + "\u2562", fa)
+            _safe_addstr(
+                stdscr,
+                y,
+                bx,
+                _glyph("soft_l") + _glyph("hline_light") * INNER + _glyph("soft_r"),
+                fa,
+            )
             y += 1
 
             display = "".join(buf)
@@ -653,15 +863,17 @@ def _tui_prompt_str(label: str, default: str | None) -> str | None:
             else:
                 visible = display
             input_text = f" > {visible}" + " " * max(0, INNER - len(visible) - 3)
-            _safe_addstr(stdscr, y, bx, "\u2551", fa)
+            _safe_addstr(stdscr, y, bx, _glyph("vline"), fa)
             _safe_addstr(
                 stdscr, y, bx + 1, input_text[:INNER], curses.color_pair(_CP_ITEM)
             )
-            _safe_addstr(stdscr, y, bx + BOX_W - 1, "\u2551", fa)
+            _safe_addstr(stdscr, y, bx + BOX_W - 1, _glyph("vline"), fa)
             input_y = y
             y += 1
 
-            _safe_addstr(stdscr, y, bx, "\u255a" + "\u2550" * INNER + "\u255d", fa)
+            _safe_addstr(
+                stdscr, y, bx, _glyph("bl") + _glyph("hline") * INNER + _glyph("br"), fa
+            )
             y += 2
 
             hints = "\u23ce Accept  Esc Cancel  Ctrl-U Clear"
@@ -717,12 +929,14 @@ def _tui_pause() -> None:
 
         y = max(0, (h - 5) // 2)
 
-        _safe_addstr(stdscr, y, bx, "\u2554" + "\u2550" * INNER + "\u2557", fa)
+        _safe_addstr(
+            stdscr, y, bx, _glyph("tl") + _glyph("hline") * INNER + _glyph("tr"), fa
+        )
         y += 1
 
         msg = "Press Enter to continue\u2026"
         padded = f" {msg:^{INNER - 2}} "
-        _safe_addstr(stdscr, y, bx, "\u2551", fa)
+        _safe_addstr(stdscr, y, bx, _glyph("vline"), fa)
         _safe_addstr(
             stdscr,
             y,
@@ -730,10 +944,12 @@ def _tui_pause() -> None:
             padded[:INNER],
             curses.color_pair(_CP_TITLE) | curses.A_BOLD,
         )
-        _safe_addstr(stdscr, y, bx + BOX_W - 1, "\u2551", fa)
+        _safe_addstr(stdscr, y, bx + BOX_W - 1, _glyph("vline"), fa)
         y += 1
 
-        _safe_addstr(stdscr, y, bx, "\u255a" + "\u2550" * INNER + "\u255d", fa)
+        _safe_addstr(
+            stdscr, y, bx, _glyph("bl") + _glyph("hline") * INNER + _glyph("br"), fa
+        )
         stdscr.refresh()
 
         while True:
@@ -857,7 +1073,13 @@ def tui_page(title: str, content: str) -> None:
 
             # Title on the top border, hints on the last row; content fills the
             # full height between them.
-            _safe_addstr(stdscr, 0, bx, "╔" + "═" * (content_w - 2) + "╗", fa)
+            _safe_addstr(
+                stdscr,
+                0,
+                bx,
+                _glyph("tl") + _glyph("hline") * (content_w - 2) + _glyph("tr"),
+                fa,
+            )
             _safe_addstr(
                 stdscr,
                 0,
@@ -865,7 +1087,13 @@ def tui_page(title: str, content: str) -> None:
                 f" {title} ",
                 curses.color_pair(_CP_TITLE) | curses.A_BOLD,
             )
-            _safe_addstr(stdscr, h - 2, bx, "╚" + "═" * (content_w - 2) + "╝", fa)
+            _safe_addstr(
+                stdscr,
+                h - 2,
+                bx,
+                _glyph("bl") + _glyph("hline") * (content_w - 2) + _glyph("br"),
+                fa,
+            )
 
             hints = (
                 "↑↓ Scroll  ←→ Pan  / Search  n/N Match  g/G Top/Bottom  q/Esc Close"
@@ -879,7 +1107,7 @@ def tui_page(title: str, content: str) -> None:
             )
 
             for i in range(max_lines):
-                _safe_addstr(stdscr, i + 1, bx, "║", fa)
+                _safe_addstr(stdscr, i + 1, bx, _glyph("vline"), fa)
                 if top + i < len(lines):
                     ln = lines[top + i]
                     seg = ln[left : left + visible_w]
@@ -895,7 +1123,7 @@ def tui_page(title: str, content: str) -> None:
                         seg,
                         curses.color_pair(_CP_ITEM),
                     )
-                _safe_addstr(stdscr, i + 1, bx + content_w - 1, "║", fa)
+                _safe_addstr(stdscr, i + 1, bx + content_w - 1, _glyph("vline"), fa)
 
             stdscr.refresh()
 
@@ -932,6 +1160,15 @@ def tui_page(title: str, content: str) -> None:
                 hit = _match_lines(lines, query, max(top - 1, 0), reverse=True)
                 if hit is not None:
                     top = hit
+            elif key == curses.KEY_MOUSE:
+                try:
+                    _mid, _mx, _my, _z, bstate = curses.getmouse()
+                except curses.error:
+                    bstate = 0
+                if bstate & curses.BUTTON4_PRESSED:
+                    top = max(0, top - 3)
+                elif bstate & curses.BUTTON5_PRESSED:
+                    top = min(last_top, top + 3)
             elif key in ("q", "Q", 27, "\x1b", curses.KEY_ENTER, 10, 13, "\n", "\r"):
                 break
             elif key == curses.KEY_RESIZE:

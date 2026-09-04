@@ -11,6 +11,9 @@ Powers [CalibreQuarry](https://github.com/VirInvictus/CalibreQuarry) and [Lattic
 ## Features
 
 - **Menus**: full-screen arrow-key `tui_select` (sections, aliases, letter keys) with an automatic numbered text fallback when curses is unavailable; a scrollable, pannable results pager (`tui_page`) with `/` search and `n`/`N` match jumping.
+- **Filtering**: on menus of 15+ entries, typing narrows the view incrementally (case-insensitive; backspace edits, Esc clears); small menus keep the classic single-key semantics.
+- **Mouse**: click moves the selection, double-click selects, and the wheel scrolls menus and pages — best-effort, degrading silently to keyboard-only.
+- **Theming**: `configure_theme(color_pairs=..., glyphs=...)` lets a host remap the six semantic color pairs and the box glyphs per app, instead of mirroring ids or forking widgets.
 - **Progress**: `progress_box()` — a session-screen-aware curses progress box with a tqdm-like API and a pipe-safe text fallback.
 - **Sessions**: `interactive_session()` context manager owning the curses screen lifecycle (open, degrade, close, KeyboardInterrupt cleanup).
 - **Formatters**: consistent `success`, `info`, `warn`, `error` styling across apps.

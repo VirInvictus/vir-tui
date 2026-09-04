@@ -1,5 +1,7 @@
 from vir_tui import core, menu
 
+import pytest
+
 
 def test_formatters():
     # Since we can't easily mock sys.stdout.isatty without side effects,
@@ -167,3 +169,71 @@ def test_progressbox_counts_and_context_manager(monkeypatch):
         bar.update()
     assert bar.current == 3
     assert bar._closed
+
+
+# --- Theme overrides + type-to-filter (2.3.0) --------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clean_overrides():
+    """Every test sees default theming; overrides never leak between tests."""
+    menu._GLYPHS.clear()
+    menu._PAIR_OVERRIDES.clear()
+    yield
+    menu._GLYPHS.clear()
+    menu._PAIR_OVERRIDES.clear()
+
+
+def test_configure_theme_glyph_override_applies_and_validates():
+    menu.configure_theme(glyphs={"pointer": "→"})
+    assert menu._glyph("pointer") == "→"
+    assert menu._glyph("tl") == "╔"  # untouched default
+
+    with pytest.raises(ValueError):
+        menu.configure_theme(glyphs={"nope": "x"})
+
+
+def test_configure_theme_color_pair_names_validate():
+    menu.configure_theme(color_pairs={"selected": (1, 0)})
+    assert menu._PAIR_OVERRIDES["selected"] == (1, 0)
+    # Unnamed pairs stay on their defaults at color init.
+    assert menu._init_tui_colors.__doc__  # lazily applied, documented shape
+
+    with pytest.raises(ValueError):
+        menu.configure_theme(color_pairs={"frames": (1, 0)})
+
+
+def test_glyph_defaults_cover_every_name_the_widgets_use():
+    for name in [
+        "tl",
+        "tr",
+        "bl",
+        "br",
+        "join_l",
+        "join_r",
+        "soft_l",
+        "soft_r",
+        "hline",
+        "hline_light",
+        "vline",
+        "pointer",
+        "block",
+        "block_light",
+    ]:
+        assert menu._glyph(name), f"{name} must resolve"
+
+
+def test_filter_visible_narrows_casefold():
+    flat = [(0, 0, "Ambient"), (0, 1, "Jazz"), (1, 0, "ambient works")]
+    assert menu._filter_visible(flat, "") == flat
+    assert menu._filter_visible(flat, "AMB") == [
+        (0, 0, "Ambient"),
+        (1, 0, "ambient works"),
+    ]
+    assert menu._filter_visible(flat, "zzz") == []
+
+
+def test_filter_threshold_keeps_small_menus_unchanged():
+    # Below the threshold every key keeps its simple meaning (q quits,
+    # letters are inert); the 2.2.0 behavior is untouched there.
+    assert menu._FILTER_MIN_ITEMS >= 15

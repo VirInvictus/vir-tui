@@ -13,3 +13,5 @@ Any breaking changes to `vir-tui` MUST be cascaded to the following applications
 3. `Bindery` (pins an exact commit by policy — bump the pin deliberately)
 
 - This is a generalized library. Do NOT hardcode domain menus. Pass them via `tui_select`.
+- **Theme overrides**: hosts remap color pairs and box glyphs through `configure_theme(color_pairs=..., glyphs=...)` (semantic names, validated); never edit the `_CP_*` ids or glyph defaults for one host's sake.
+- **Test story**: run the suite as `PYTHONPATH=src python -m pytest tests/`. A bare pytest from the repo root silently imports the stale ambient site-packages install and tests nothing that changed.
