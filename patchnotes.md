@@ -19,6 +19,9 @@ Phase 3 — consumer-driven primitives, from the cross-app TUI survey (CalibreQu
 # 2.1.0 (2026-08-25)
 - **Feature**: Added `session_screen()` accessor exposing the persistent curses screen, so host apps can route their own progress widgets into the session screen instead of starting their own.
 
+# 2.0.1 (2026-08-25)
+- **Chore**: packaging-only bump (VERSION + pyproject), no behavior change. Recorded late so the version chain here is complete: the bump shipped without an entry, which is the drift this note repairs.
+
 # 2.0.0 (2026-08-24)
 - **Breaking**: Gutted hardcoded Lattice/CalibreQuarry domains (`_MAIN_SECTIONS`, `_LIB_SECTIONS`). Consumers must now provide their own tuples to `tui_select`.
 - **Breaking**: Exported public API clean without underscores (e.g. `tui_select`, `ask`, `notify`, `reset_terminal`).

@@ -2,9 +2,9 @@
 
 A lightweight, terminal UI primitive library for the VirInvictus CLI toolchain.
 
-Provides a raw TTY event loop, a grid-based menu renderer, robust cross-platform ANSI colors, input prompt lifecycles, and a fallback progress bar wrapper for CLI applications that run headless but offer an interactive terminal interface.
+Provides a curses-based interactive menu with type-to-filter and mouse support, a scrollable results pager, robust cross-platform ANSI colors, boxed input prompt lifecycles, theme overrides, and a session-aware progress box for CLI applications that run headless but offer an interactive terminal interface.
 
-Powers [CalibreQuarry](https://github.com/VirInvictus/CalibreQuarry) and [Lattice](https://github.com/VirInvictus/Lattice).
+Powers [CalibreQuarry](https://github.com/VirInvictus/CalibreQuarry), [lattice-music](https://github.com/VirInvictus/lattice-music), and [bindery-cli](https://github.com/VirInvictus/bindery-cli).
 
 `Python · stdlib`
 
