@@ -7,7 +7,7 @@
 When a roadmap item is completed, ensure the following dependent applications are bumped or verified:
 - [x] `CalibreQuarry`
 - [x] `Lattice`
-- [x] `Bindery` (pins vir-tui to an exact commit by policy — bump the pin deliberately)
+- [x] `Bindery` (holds a PyPI floor like the other consumers; the exact-commit-pin era is retired, so bumps are additive at Bindery's own releases)
 
 ## Phase 2: Core Generalization & Integration Fixes
 *Based on the post-extraction research report.*
@@ -56,12 +56,15 @@ When a roadmap item is completed, ensure the following dependent applications ar
       run_with_capture runs stty sane on terminals curses never touched
       (gate on engagement); color-pair ids 1-6 have no reservation policy
       (document the reserve or add an allocator).
-- [ ] **The hygiene quartet (still open, confirmed today):** git rm
+- [x] **The hygiene quartet (still open, confirmed today):** git rm
       refactor.py (tracked one-off with hardcoded /home/bdkl paths);
       delete tag_message.txt; uv lock (records 2.1.0 vs 2.3.0); the
       roadmap's bindery exact-commit-pin line contradicts the retired
       policy. Patchnotes H1 restructure stays deferred to the next
-      release entry.
+      release entry. *(Done 2026-09-13: refactor.py removed from the
+      tree, tag_message.txt deleted, uv.lock refreshed to 2.3.0, and
+      the Bindery consumer line above rewritten for the retired pin
+      policy.)*
 - [ ] **Enhancement queue:** vir_tui.progress() factory absorbing the
       consumers' IN_TUI/_make_pbar machinery; session-aware color() +
       tui_active(); menu-loop contract cleanup (handle "fallback"/
