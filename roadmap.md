@@ -73,3 +73,8 @@ When a roadmap item is completed, ensure the following dependent applications ar
       homepage should be the PyPI page; no Releases (v2.3.0 notes ready);
       README needs an Install section + usage example (it is the PyPI
       storefront).
+
+- [ ] **DECIDED 2026-09-13: the license is GPL-3.0-or-later** (decision
+      62) - replace the MIT LICENSE text with the standard GPL-3.0
+      file, add `license = "GPL-3.0-or-later"` + the classifier to
+      pyproject, and republish at the next release.
