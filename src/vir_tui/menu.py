@@ -32,14 +32,24 @@ _SCREEN = None
 def _with_screen(fn):
     """Run a widget body against the session's persistent screen, or in a
     one-shot curses.wrapper session when no session owns one. Colors are
-    initialized here (or in _open_screen), not per widget."""
+    initialized here (or in open_screen), not per widget."""
     if _SCREEN is not None:
         return fn(_SCREEN)
 
     def _boot(stdscr):
+        global _SCREEN
         _init_tui_colors()
         _enable_mouse(stdscr)
-        return fn(stdscr)
+        # Publish the one-shot screen for the wrapper's duration: a nested
+        # widget call (e.g. the pager's "/" search prompt) must reuse this
+        # screen instead of re-entering curses.wrapper, whose finally block
+        # runs endwin() on the live outer session and leaves it in cooked
+        # mode. session_screen() and ProgressBox also see it mid-run.
+        _SCREEN = stdscr
+        try:
+            return fn(stdscr)
+        finally:
+            _SCREEN = None
 
     return curses.wrapper(_boot)
 

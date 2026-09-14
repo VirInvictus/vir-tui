@@ -234,6 +234,87 @@ def test_filter_visible_narrows_casefold():
 
 
 def test_filter_threshold_keeps_small_menus_unchanged():
-    # Below the threshold every key keeps its simple meaning (q quits,
-    # letters are inert); the 2.2.0 behavior is untouched there.
+    # Below the threshold every key keeps its simple meaning: q quits,
+    # arrows and j/k navigate, other letters are inert. The constant is the
+    # contract; the dispatch itself is exercised by the one-shot tests below.
     assert menu._FILTER_MIN_ITEMS >= 15
+
+
+# --- Terminal safety: the one-shot screen lifecycle --------------------------------
+
+
+class _FakeScr:
+    """Minimal stdscr double: records addstr calls, feeds scripted keys."""
+
+    def __init__(self, keys, h=24, w=80):
+        self.keys = iter(keys)
+        self.h, self.w = h, w
+        self.drawn = []
+
+    def getmaxyx(self):
+        return (self.h, self.w)
+
+    def erase(self):
+        pass
+
+    def refresh(self):
+        pass
+
+    def addstr(self, y, x, text, attr=0):
+        self.drawn.append((y, x, text))
+
+    def move(self, y, x):
+        pass
+
+    def get_wch(self):
+        return next(self.keys)
+
+
+def test_one_shot_screen_published_and_restored(monkeypatch):
+    # A one-shot widget boot publishes its screen for the wrapper's duration:
+    # nested widgets, ProgressBox, and session_screen() must see it, and it
+    # must be gone again once the wrapper returns.
+    fake = _FakeScr(["q"])
+    monkeypatch.setattr(menu.curses, "wrapper", lambda boot: boot(fake))
+
+    seen = {}
+
+    def body(scr):
+        seen["scr"] = scr
+        seen["session"] = menu.session_screen()
+        return "ok"
+
+    assert menu._with_screen(body) == "ok"
+    assert seen["scr"] is fake
+    assert seen["session"] is fake  # visible mid-one-shot
+    assert menu._SCREEN is None  # restored after the wrapper returns
+
+
+@pytest.fixture
+def one_shot_screen(monkeypatch):
+    """A one-shot curses.wrapper routed through a fake screen. color_pair is
+    stubbed to its real (started-session) shape: without a terminal behind
+    pytest it would raise curses.error and trip every degrade path."""
+    scr = _FakeScr(())
+    monkeypatch.setattr(menu.curses, "color_pair", lambda n: n << 8)
+    monkeypatch.setattr(menu.curses, "wrapper", lambda boot: boot(scr))
+    return scr
+
+
+def test_pager_search_reuses_the_one_shot_screen(monkeypatch, one_shot_screen):
+    # The concrete corruption path: "/" search inside a one-shot tui_page
+    # (what run_with_capture produces with no session). The search prompt
+    # must render into the pager's screen, not re-enter curses.wrapper.
+    one_shot_screen.keys = iter(["/", "q"])
+    monkeypatch.setattr(menu, "_USE_CURSES", True)
+
+    seen = {}
+
+    def fake_prompt(label, default):
+        # Mid-one-shot the published screen must be the pager's, or the
+        # prompt boots a second wrapper whose teardown kills the outer one.
+        seen["screen"] = menu._SCREEN
+
+    monkeypatch.setattr(menu, "_tui_prompt_str", fake_prompt)
+    menu.tui_page("Report", "hello world")
+    assert seen["screen"] is one_shot_screen
