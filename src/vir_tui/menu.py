@@ -3,6 +3,7 @@ import os
 import sys
 import time
 import traceback
+import unicodedata
 from contextlib import contextmanager
 from typing import Any, Self
 
@@ -477,6 +478,95 @@ _TUI_BOX_W = 46
 _TUI_INNER = _TUI_BOX_W - 2  # chars between the two ║ borders
 
 
+def _char_cells(ch: str) -> int:
+    """Display cells one character occupies: East Asian wide/fullwidth
+    characters take 2, combining marks take 0, everything else 1."""
+    if unicodedata.combining(ch):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+def _cell_width(text: str) -> int:
+    """Display cells ``text`` occupies. Every width computation in the
+    widgets goes through this so CJK labels pad, center, pan, and truncate
+    by what the terminal actually shows instead of by code points."""
+    return sum(_char_cells(ch) for ch in text)
+
+
+def _fit_cells(text: str, width: int) -> str:
+    """``text`` truncated to at most ``width`` display cells; a wide
+    character that would straddle the edge is dropped rather than drawn
+    over the border."""
+    out = []
+    used = 0
+    for ch in text:
+        used += _char_cells(ch)
+        if used > width:
+            break
+        out.append(ch)
+    return "".join(out)
+
+
+def _slice_cells(text: str, start: int, width: int) -> str:
+    """The run of ``text`` starting ``start`` display cells in and at most
+    ``width`` cells wide (the pager's panning). A wide character straddling
+    either edge is dropped: half a glyph renders as garbage."""
+    out = []
+    pos = 0
+    for ch in text:
+        w = _char_cells(ch)
+        if pos < start:
+            pos += w
+            continue
+        if pos + w > start + width:
+            break
+        out.append(ch)
+        pos += w
+    return "".join(out)
+
+
+def _tail_cells(text: str, width: int) -> str:
+    """The last ``width`` display cells of ``text`` (the input field shows
+    the tail once the cursor passes it); wide characters never split."""
+    if width <= 0:
+        return ""
+    out = []
+    used = 0
+    for ch in reversed(text):
+        w = _char_cells(ch)
+        if used + w > width:
+            break
+        out.append(ch)
+        used += w
+    return "".join(reversed(out))
+
+
+def _pad_cells(text: str, width: int) -> str:
+    """``text`` right-padded with spaces to exactly ``width`` cells (or
+    truncated to it), so box rows always meet the borders."""
+    return _fit_cells(text, width) + " " * max(0, width - _cell_width(text))
+
+
+def _center_cells(text: str, width: int) -> str:
+    """``text`` centered in ``width`` cells (truncated when too wide)."""
+    w = _cell_width(text)
+    if w >= width:
+        return _fit_cells(text, width)
+    left = (width - w) // 2
+    return " " * left + text + " " * (width - w - left)
+
+
+def _hborder(
+    stdscr, y: int, x: int, inner: int, left: str, mid: str, right: str, attr: int
+) -> None:
+    """One horizontal border row: corner glyphs around a fill of ``inner``
+    display cells. Single-site so every box measures its fill in cells and
+    a themed glyph can never overflow a frame."""
+    fill = _char_cells(mid) or 1
+    count = max(0, (inner - _char_cells(left) - _char_cells(right)) // fill)
+    _safe_addstr(stdscr, y, x, left + mid * count + right, attr)
+
+
 class ProgressBox:
     """Curses progress box matching the TUI style, with a tqdm-like API.
 
@@ -575,24 +665,18 @@ class ProgressBox:
         fa = curses.color_pair(_CP_FRAME)
 
         s.erase()
-        _safe_addstr(
-            s, y, bx, _glyph("tl") + _glyph("hline") * inner + _glyph("tr"), fa
-        )
+        _hborder(s, y, bx, inner, _glyph("tl"), _glyph("hline"), _glyph("tr"), fa)
         _safe_addstr(s, y + 1, bx, _glyph("vline"), fa)
         _safe_addstr(
             s,
             y + 1,
             bx + 1,
-            f" {self.desc}".ljust(inner),
+            _pad_cells(f" {self.desc}", inner),
             curses.color_pair(_CP_HEADER) | curses.A_BOLD,
         )
         _safe_addstr(s, y + 1, bx + box_w - 1, _glyph("vline"), fa)
-        _safe_addstr(
-            s,
-            y + 2,
-            bx,
-            _glyph("join_l") + _glyph("hline") * inner + _glyph("join_r"),
-            fa,
+        _hborder(
+            s, y + 2, bx, inner, _glyph("join_l"), _glyph("hline"), _glyph("join_r"), fa
         )
 
         percent = self.current / max(1, self.total)
@@ -606,7 +690,7 @@ class ProgressBox:
             s,
             y + 3,
             bx + 1,
-            f" {bar} {pct_str} ".ljust(inner),
+            _pad_cells(f" {bar} {pct_str} ", inner),
             curses.color_pair(_CP_ITEM),
         )
         _safe_addstr(s, y + 3, bx + box_w - 1, _glyph("vline"), fa)
@@ -616,13 +700,11 @@ class ProgressBox:
             s,
             y + 4,
             bx + 1,
-            info[:inner].ljust(inner),
+            _pad_cells(info, inner),
             curses.color_pair(_CP_ITEM),
         )
         _safe_addstr(s, y + 4, bx + box_w - 1, _glyph("vline"), fa)
-        _safe_addstr(
-            s, y + 5, bx, _glyph("bl") + _glyph("hline") * inner + _glyph("br"), fa
-        )
+        _hborder(s, y + 5, bx, inner, _glyph("bl"), _glyph("hline"), _glyph("br"), fa)
         s.refresh()
 
 
@@ -705,9 +787,7 @@ def _tui_select(
             # keys working blind). Rows past the bottom simply don't draw.
             y = max(0, (h - 2) - sel_row)
 
-        _safe_addstr(
-            stdscr, y, bx, _glyph("tl") + _glyph("hline") * INNER + _glyph("tr"), fa
-        )
+        _hborder(stdscr, y, bx, INNER, _glyph("tl"), _glyph("hline"), _glyph("tr"), fa)
         y += 1
 
         _safe_addstr(stdscr, y, bx, _glyph("vline"), fa)
@@ -715,17 +795,20 @@ def _tui_select(
             stdscr,
             y,
             bx + 1,
-            f" {title:^{INNER - 2}} ",
+            _center_cells(f" {title} ", INNER),
             curses.color_pair(_CP_TITLE) | curses.A_BOLD,
         )
         _safe_addstr(stdscr, y, bx + BOX_W - 1, _glyph("vline"), fa)
         y += 1
 
-        _safe_addstr(
+        _hborder(
             stdscr,
             y,
             bx,
-            _glyph("join_l") + _glyph("hline") * INNER + _glyph("join_r"),
+            INNER,
+            _glyph("join_l"),
+            _glyph("hline"),
+            _glyph("join_r"),
             fa,
         )
         y += 1
@@ -737,18 +820,21 @@ def _tui_select(
             if not vis:
                 continue
             if not first:
-                _safe_addstr(
+                _hborder(
                     stdscr,
                     y,
                     bx,
-                    _glyph("soft_l") + _glyph("hline_light") * INNER + _glyph("soft_r"),
+                    INNER,
+                    _glyph("soft_l"),
+                    _glyph("hline_light"),
+                    _glyph("soft_r"),
                     fa,
                 )
                 y += 1
             first = False
 
             if hdr:
-                content = f"  {hdr}" + " " * (INNER - len(hdr) - 2)
+                content = _pad_cells(f"  {hdr}", INNER)
                 _safe_addstr(stdscr, y, bx, _glyph("vline"), fa)
                 _safe_addstr(
                     stdscr,
@@ -769,17 +855,15 @@ def _tui_select(
                 else:
                     text = f"   {label}"
                     attr = curses.color_pair(_CP_ITEM)
-                padded = text + " " * max(0, INNER - len(text))
+                padded = _pad_cells(text, INNER)
                 _safe_addstr(stdscr, y, bx, _glyph("vline"), fa)
-                _safe_addstr(stdscr, y, bx + 1, padded[:INNER], attr)
+                _safe_addstr(stdscr, y, bx + 1, padded, attr)
                 _safe_addstr(stdscr, y, bx + BOX_W - 1, _glyph("vline"), fa)
                 row_map[y] = vi
                 y += 1
                 idx += 1
 
-        _safe_addstr(
-            stdscr, y, bx, _glyph("bl") + _glyph("hline") * INNER + _glyph("br"), fa
-        )
+        _hborder(stdscr, y, bx, INNER, _glyph("bl"), _glyph("hline"), _glyph("br"), fa)
         y += 2
 
         if filter_on and query:
@@ -790,7 +874,7 @@ def _tui_select(
             hints_line = f"{hints}  type to filter"
         else:
             hints_line = hints
-        hx = max(0, (w - len(hints_line)) // 2)
+        hx = max(0, (w - _cell_width(hints_line)) // 2)
         _safe_addstr(
             stdscr, y, hx, hints_line, curses.color_pair(_CP_HINT) | curses.A_DIM
         )
@@ -893,60 +977,60 @@ def _tui_prompt_str(label: str, default: str | None) -> str | None:
 
             y = max(0, (h - 8) // 2)
 
-            _safe_addstr(
-                stdscr, y, bx, _glyph("tl") + _glyph("hline") * INNER + _glyph("tr"), fa
+            _hborder(
+                stdscr, y, bx, INNER, _glyph("tl"), _glyph("hline"), _glyph("tr"), fa
             )
             y += 1
 
-            lbl = f"  {label}"
-            padded_lbl = lbl + " " * max(0, INNER - len(lbl))
+            padded_lbl = _pad_cells(f"  {label}", INNER)
             _safe_addstr(stdscr, y, bx, _glyph("vline"), fa)
             _safe_addstr(
                 stdscr,
                 y,
                 bx + 1,
-                padded_lbl[:INNER],
+                padded_lbl,
                 curses.color_pair(_CP_HEADER) | curses.A_BOLD,
             )
             _safe_addstr(stdscr, y, bx + BOX_W - 1, _glyph("vline"), fa)
             y += 1
 
-            _safe_addstr(
+            _hborder(
                 stdscr,
                 y,
                 bx,
-                _glyph("soft_l") + _glyph("hline_light") * INNER + _glyph("soft_r"),
+                INNER,
+                _glyph("soft_l"),
+                _glyph("hline_light"),
+                _glyph("soft_r"),
                 fa,
             )
             y += 1
 
             display = "".join(buf)
             max_input = INNER - 4
-            if len(display) > max_input:
-                visible = "\u2026" + display[-(max_input - 1) :]
+            if _cell_width(display) > max_input:
+                visible = "\u2026" + _tail_cells(display, max_input - 1)
             else:
                 visible = display
-            input_text = f" > {visible}" + " " * max(0, INNER - len(visible) - 3)
+            input_text = _pad_cells(f" > {visible}", INNER)
             _safe_addstr(stdscr, y, bx, _glyph("vline"), fa)
-            _safe_addstr(
-                stdscr, y, bx + 1, input_text[:INNER], curses.color_pair(_CP_ITEM)
-            )
+            _safe_addstr(stdscr, y, bx + 1, input_text, curses.color_pair(_CP_ITEM))
             _safe_addstr(stdscr, y, bx + BOX_W - 1, _glyph("vline"), fa)
             input_y = y
             y += 1
 
-            _safe_addstr(
-                stdscr, y, bx, _glyph("bl") + _glyph("hline") * INNER + _glyph("br"), fa
+            _hborder(
+                stdscr, y, bx, INNER, _glyph("bl"), _glyph("hline"), _glyph("br"), fa
             )
             y += 2
 
             hints = "\u23ce Accept  Esc Cancel  Ctrl-U Clear"
-            hx = max(0, (w - len(hints)) // 2)
+            hx = max(0, (w - _cell_width(hints)) // 2)
             _safe_addstr(
                 stdscr, y, hx, hints, curses.color_pair(_CP_HINT) | curses.A_DIM
             )
 
-            cursor_x = bx + 4 + min(len(display), max_input)
+            cursor_x = bx + 4 + min(_cell_width(display), max_input)
             try:
                 stdscr.move(input_y, min(cursor_x, bx + BOX_W - 2))
             except curses.error:
@@ -993,27 +1077,23 @@ def _tui_pause() -> None:
 
         y = max(0, (h - 5) // 2)
 
-        _safe_addstr(
-            stdscr, y, bx, _glyph("tl") + _glyph("hline") * INNER + _glyph("tr"), fa
-        )
+        _hborder(stdscr, y, bx, INNER, _glyph("tl"), _glyph("hline"), _glyph("tr"), fa)
         y += 1
 
         msg = "Press Enter to continue\u2026"
-        padded = f" {msg:^{INNER - 2}} "
+        padded = _center_cells(f" {msg} ", INNER)
         _safe_addstr(stdscr, y, bx, _glyph("vline"), fa)
         _safe_addstr(
             stdscr,
             y,
             bx + 1,
-            padded[:INNER],
+            padded,
             curses.color_pair(_CP_TITLE) | curses.A_BOLD,
         )
         _safe_addstr(stdscr, y, bx + BOX_W - 1, _glyph("vline"), fa)
         y += 1
 
-        _safe_addstr(
-            stdscr, y, bx, _glyph("bl") + _glyph("hline") * INNER + _glyph("br"), fa
-        )
+        _hborder(stdscr, y, bx, INNER, _glyph("bl"), _glyph("hline"), _glyph("br"), fa)
         stdscr.refresh()
 
         while True:
@@ -1113,8 +1193,11 @@ def tui_page(title: str, content: str) -> None:
     # \r goes the way of \x00: captured stderr routinely carries tqdm's
     # carriage-return progress frames, which scramble addstr rendering.
     lines = content.replace("\x00", "").replace("\r", "").expandtabs(4).split("\n")
-    # Computed once, not per keypress: the content never changes while paging.
-    max_line_len = max((len(ln) for ln in lines), default=0)
+    # Computed once, not per keypress: the content never changes while
+    # paging. Widths are display cells, so CJK lines pan and truncate
+    # correctly.
+    line_cells = [_cell_width(ln) for ln in lines]
+    max_line_len = max(line_cells, default=0)
 
     def _run(stdscr):
         _curs_set(0)
@@ -1139,11 +1222,14 @@ def tui_page(title: str, content: str) -> None:
 
             # Title on the top border, hints on the last row; content fills the
             # full height between them.
-            _safe_addstr(
+            _hborder(
                 stdscr,
                 0,
                 bx,
-                _glyph("tl") + _glyph("hline") * (content_w - 2) + _glyph("tr"),
+                content_w - 2,
+                _glyph("tl"),
+                _glyph("hline"),
+                _glyph("tr"),
                 fa,
             )
             _safe_addstr(
@@ -1153,11 +1239,14 @@ def tui_page(title: str, content: str) -> None:
                 f" {title} ",
                 curses.color_pair(_CP_TITLE) | curses.A_BOLD,
             )
-            _safe_addstr(
+            _hborder(
                 stdscr,
                 h - 2,
                 bx,
-                _glyph("bl") + _glyph("hline") * (content_w - 2) + _glyph("br"),
+                content_w - 2,
+                _glyph("bl"),
+                _glyph("hline"),
+                _glyph("br"),
                 fa,
             )
 
@@ -1167,7 +1256,7 @@ def tui_page(title: str, content: str) -> None:
             _safe_addstr(
                 stdscr,
                 h - 1,
-                max(0, (w - len(hints)) // 2),
+                max(0, (w - _cell_width(hints)) // 2),
                 hints,
                 curses.color_pair(_CP_HINT) | curses.A_DIM,
             )
@@ -1176,12 +1265,15 @@ def tui_page(title: str, content: str) -> None:
                 _safe_addstr(stdscr, i + 1, bx, _glyph("vline"), fa)
                 if top + i < len(lines):
                     ln = lines[top + i]
-                    seg = ln[left : left + visible_w]
+                    cells = line_cells[top + i]
                     # Ellipsis markers show that a line continues off-screen.
-                    if len(ln) - left > visible_w and seg:
-                        seg = seg[:-1] + "…"
+                    # The visible run is sliced by display cells so a wide
+                    # character never straddles a border or a pan edge.
+                    seg = _slice_cells(ln, left, visible_w)
+                    if cells - left > visible_w and seg:
+                        seg = _slice_cells(ln, left, visible_w - 1) + "…"
                     if left and seg:
-                        seg = "…" + seg[1:]
+                        seg = "…" + _tail_cells(seg, visible_w - 1)
                     _safe_addstr(
                         stdscr,
                         i + 1,

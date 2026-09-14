@@ -461,6 +461,60 @@ def test_progressbox_close_forces_the_final_state(monkeypatch):
     assert bar._dirty is False  # the final state was forced out
 
 
+# --- Cell-based widths (CJK) ------------------------------------------------------------
+
+
+def test_cell_width_helpers():
+    assert menu._cell_width("abc") == 3
+    assert menu._cell_width("日本語") == 6  # wide: 2 cells each
+    assert menu._cell_width("ｆｕｌｌ") == 8  # fullwidth forms: 2 cells each
+    assert menu._cell_width("e\u0301") == 1  # combining mark adds nothing
+    assert menu._cell_width("") == 0
+
+    # Truncation never splits a wide character.
+    assert menu._fit_cells("日本語", 5) == "日本"
+    assert menu._fit_cells("abc", 10) == "abc"
+
+    # Slicing by cells keeps pan positions aligned with what renders.
+    assert menu._slice_cells("日本語", 0, 4) == "日本"
+    assert menu._slice_cells("日本語", 2, 4) == "本語"
+    assert menu._slice_cells("日本語", 1, 2) == ""  # a wide char straddles the edge
+    assert menu._slice_cells("abcdef", 2, 3) == "cde"
+
+    # The tail keeps the rightmost cells (the input field shows the tail).
+    assert menu._tail_cells("日本語", 4) == "本語"
+    assert menu._tail_cells("abcdef", 2) == "ef"
+
+    # Padding and centering land on exact cell widths.
+    assert menu._cell_width(menu._pad_cells("日", 5)) == 5
+    assert menu._cell_width(menu._center_cells("日", 7)) == 7
+    assert menu._center_cells("toolongtitle", 5) == "toolo"
+
+
+def test_cjk_items_render_within_the_box(monkeypatch, one_shot_screen):
+    # Wide labels used to overflow the 46-column box: padding and
+    # truncation went by code points, not display cells.
+    items = ["Ｗｉｄｅラベルその１ " * 3 for _ in range(16)]
+    one_shot_screen.keys = iter(["\r"])
+    menu._tui_select("日本語タイトル", [("ライブラリ", items)])
+    inner_rows = [t for _y, x, t in one_shot_screen.drawn if x == 18]  # bx + 1
+    assert inner_rows
+    for t in inner_rows:
+        assert menu._cell_width(t) <= menu._TUI_INNER
+
+
+def test_pager_pans_cjk_by_cells(monkeypatch, one_shot_screen):
+    # Panning used to slice by code points, so wide characters rendered
+    # past the right border and the pan range under-measured.
+    line = "日本語のテキスト " * 8
+    one_shot_screen.keys = iter(["l", "q"])
+    monkeypatch.setattr(menu, "_USE_CURSES", True)
+    menu.tui_page("レポート", f"{line}\nplain\n")
+    assert one_shot_screen.drawn
+    for _y, _x, t in one_shot_screen.drawn:
+        assert menu._cell_width(t) <= 80  # nothing renders past the screen
+
+
 def test_filter_menu_arrows_navigate_and_q_still_quits(monkeypatch, one_shot_screen):
     # The arrows carry navigation on every menu, and q/Q stay reserved for
     # quit while no query is armed (their own guard predates the j/k fix).
