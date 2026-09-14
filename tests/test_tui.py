@@ -342,6 +342,21 @@ def test_small_menu_j_still_navigates(monkeypatch, one_shot_screen):
     assert menu._tui_select("Pick", [("Music", items)]) == (0, 1)
 
 
+def test_open_screen_degrades_without_curses(monkeypatch):
+    # The documented contract: no curses module means open_screen returns
+    # None and interactive_session degrades to the text menu. The old code
+    # crashed first: its except clause evaluated the unbound curses name.
+    monkeypatch.setattr(menu, "HAVE_CURSES", False)
+    assert menu.open_screen() is None
+    assert menu._SCREEN is None
+
+    closed = []
+    monkeypatch.setattr(menu, "close_screen", lambda: closed.append(True))
+    with menu.interactive_session() as scr:
+        assert scr is None
+    assert closed == [True]
+
+
 def test_filter_menu_arrows_navigate_and_q_still_quits(monkeypatch, one_shot_screen):
     # The arrows carry navigation on every menu, and q/Q stay reserved for
     # quit while no query is armed (their own guard predates the j/k fix).

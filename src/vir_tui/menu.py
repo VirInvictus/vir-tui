@@ -59,6 +59,11 @@ def open_screen():
     set). Returns the screen, or None when curses can't start on this
     terminal — the caller degrades the whole session to the text menu."""
     global _SCREEN, _USE_CURSES
+    if not HAVE_CURSES:
+        # Same degrade contract as close_screen: touch nothing curses-shaped,
+        # so the documented "returns None" path cannot crash on the unbound
+        # curses name (the except clause below never evaluates here).
+        return None
     try:
         stdscr = curses.initscr()
         curses.noecho()
