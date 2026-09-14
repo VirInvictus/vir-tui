@@ -17,6 +17,7 @@ import traceback
 import unicodedata
 from contextlib import contextmanager
 from typing import Any, Self
+from collections.abc import Callable, Iterator
 
 try:
     import curses
@@ -26,6 +27,8 @@ except ImportError:
     HAVE_CURSES = False
 
 import subprocess
+
+from .core import tqdm
 
 # =====================================
 # Session lifecycle
@@ -141,6 +144,14 @@ def text_mode() -> bool:
     or a mid-session degrade). Hosts use it to pick text-only affordances
     (e.g. printing an error line at a text menu instead of redrawing)."""
     return not _USE_CURSES
+
+
+def tui_active() -> bool:
+    """True while a curses surface owns the terminal: a session screen is
+    open, or a one-shot widget is mid-run. Hosts gate their own ANSI
+    printing and progress handling on this instead of re-deriving the
+    check (the IN_TUI-style flags consumers used to carry)."""
+    return _USE_CURSES or _SCREEN is not None
 
 
 @contextmanager
@@ -288,7 +299,9 @@ def prompt_path(label: str, default: str = "", *, must_exist: bool = True) -> st
         path = os.path.abspath(os.path.expanduser(raw))
         if not must_exist or os.path.exists(path):
             return path
-        notify(f"Not found: {path}")
+        # A one-line flash, not notify()'s full-screen pager: a path typo
+        # should not cost a second keypress beyond dismissing the notice.
+        flash(f"Not found: {path}")
 
 
 def confirm(label: str, default: bool = False, *, danger: bool = False) -> bool:
@@ -311,6 +324,39 @@ def notify(msg: str) -> None:
         print(f"  {msg}")
 
 
+def flash(msg: str) -> None:
+    """A one-line status notice on the hints row: any key dismisses it. For
+    lightweight acknowledgements (a path typo, a setting flip) whose weight
+    does not justify the full-screen pager notify() runs. Prints in text
+    mode."""
+
+    def _run(stdscr) -> None:
+        _curs_set(0)
+        stdscr.erase()
+        h, w = stdscr.getmaxyx()
+        text = f"  {msg}  "
+        _safe_addstr(
+            stdscr,
+            h - 1,
+            max(0, (w - _cell_width(text)) // 2),
+            text,
+            curses.color_pair(_CP_HINT) | curses.A_REVERSE,
+        )
+        stdscr.refresh()
+        stdscr.get_wch()  # any key dismisses
+
+    if _USE_CURSES:
+        try:
+            _with_screen(_run)
+        except KeyboardInterrupt:
+            pass
+        except curses.error:
+            _degrade_to_text()
+            print(f"  {msg}")
+    else:
+        print(f"  {msg}")
+
+
 def box_menu(title: str, sections: list, width: int = 44) -> None:
     """Fallback text menu for environments without curses."""
     iw = width - 4
@@ -329,8 +375,9 @@ def box_menu(title: str, sections: list, width: int = 44) -> None:
     print(f"  ╚{'═' * (width - 2)}╝")
 
 
-def _pause() -> None:
-    """Wait for user acknowledgement before redrawing."""
+def pause() -> None:
+    """Wait for user acknowledgement before redrawing: the curses
+    'Press Enter' box, or an input() line in text mode."""
     if _USE_CURSES:
         _tui_pause()
         return
@@ -338,6 +385,10 @@ def _pause() -> None:
         input("\n  Press Enter to continue...")
     except EOFError, KeyboardInterrupt:
         pass
+
+
+# Private name the internal callers (and any older external ones) use.
+_pause = pause
 
 
 # =====================================
@@ -770,6 +821,17 @@ def progress_box(total: int, desc: str = "") -> ProgressBox:
     return ProgressBox(total, desc)
 
 
+def progress(total: int, desc: str = "") -> Any:
+    """Session-aware progress factory: a ProgressBox drawing into the
+    session's screen while a TUI session is active, the sanctioned tqdm
+    re-export (real tqdm when installed, the stub otherwise) in text mode.
+    One call covers both halves of the IN_TUI-style dispatch hosts used to
+    hand-roll."""
+    if _USE_CURSES:
+        return progress_box(total, desc)
+    return tqdm(total=total, desc=desc)
+
+
 # =====================================
 # Interactive menu
 # =====================================
@@ -781,6 +843,11 @@ def _safe_addstr(stdscr, y: int, x: int, text: str, attr: int) -> None:
         stdscr.addstr(y, x, text, attr)
     except curses.error:
         pass
+
+
+# Public alias: hosts drawing their own widgets into the session screen get
+# the out-of-bounds-safe write every widget here uses.
+safe_addstr = _safe_addstr
 
 
 def _tui_select(
@@ -804,44 +871,56 @@ def _tui_select(
             flat.append((si, ii, label))
     filter_on = len(flat) >= _FILTER_MIN_ITEMS
 
-    def _draw(stdscr, cur: int, visible, query: str) -> dict[int, int]:
-        """Draw the (possibly narrowed) menu; returns {screen row: visible
-        index} for mouse hit-testing."""
+    def _draw(
+        stdscr, cur: int, visible, query: str, first_row: int
+    ) -> tuple[dict[int, int], int]:
+        """Draw the (possibly narrowed, possibly windowed) menu; returns
+        {screen row: visible index} for mouse hit-testing plus the first
+        rendered plan row, so the caller keeps the viewport anchored
+        between keypresses. A menu taller than the terminal scrolls in a
+        window that follows the selection."""
         row_map: dict[int, int] = {}
         vis_by_si: dict[int, list[int]] = {}
         for vi, (si, _ii, _label) in enumerate(visible):
             vis_by_si.setdefault(si, []).append(vi)
+
+        # The content as one plan of rows: separators, headers, items.
+        plan: list[tuple[str, Any]] = []
+        for si, (hdr, _items) in enumerate(sections):
+            vis = vis_by_si.get(si)
+            if not vis:
+                continue
+            if plan:
+                plan.append(("sep", None))
+            if hdr:
+                plan.append(("header", hdr))
+            for vi in vis:
+                plan.append(("item", vi))
 
         stdscr.erase()
         h, w = stdscr.getmaxyx()
         bx = max(0, (w - BOX_W) // 2)
         fa = curses.color_pair(_CP_FRAME)
 
-        box_h = 3
-        sel_row = 3
-        first = True
-        for si, (hdr, _items) in enumerate(sections):
-            vis = vis_by_si.get(si)
-            if not vis:
-                continue
-            if not first:
-                box_h += 1
-            first = False
-            if hdr:
-                box_h += 1
-            for vi in vis:
-                if vi == cur:
-                    sel_row = box_h
-                box_h += 1
-        box_h += 1
+        # Budget: borders (2), title (1), join (1), hints row + gap (2).
+        shown = min(len(plan), max(1, h - 6))
+        sel_plan = 0
+        for pi, (kind, payload) in enumerate(plan):
+            if kind == "item" and payload == cur:
+                sel_plan = pi
+                break
+        scrolled = shown < len(plan)
+        if scrolled:
+            first_row = max(0, min(first_row, len(plan) - shown))
+            if sel_plan < first_row:
+                first_row = sel_plan
+            elif sel_plan >= first_row + shown:
+                first_row = sel_plan - shown + 1
+        else:
+            first_row = 0
+        window = plan[first_row : first_row + shown]
 
-        y = max(0, (h - box_h - 2) // 2)
-        if y + sel_row >= h - 1:
-            # Terminal shorter than the menu: shift the box up so the selected
-            # row stays visible, but never below the top edge (a negative y
-            # used to fail every draw silently, leaving a blank screen with
-            # keys working blind). Rows past the bottom simply don't draw.
-            y = max(0, (h - 2) - sel_row)
+        y = max(0, (h - (3 + shown + 1) - 2) // 2)
 
         _hborder(stdscr, y, bx, INNER, _glyph("tl"), _glyph("hline"), _glyph("tr"), fa)
         y += 1
@@ -869,13 +948,8 @@ def _tui_select(
         )
         y += 1
 
-        idx = 0
-        first = True
-        for si, (hdr, _items) in enumerate(sections):
-            vis = vis_by_si.get(si)
-            if not vis:
-                continue
-            if not first:
+        for kind, payload in window:
+            if kind == "sep":
                 _hborder(
                     stdscr,
                     y,
@@ -886,11 +960,8 @@ def _tui_select(
                     _glyph("soft_r"),
                     fa,
                 )
-                y += 1
-            first = False
-
-            if hdr:
-                content = _pad_cells(f"  {hdr}", INNER)
+            elif kind == "header":
+                content = _pad_cells(f"  {payload}", INNER)
                 _safe_addstr(stdscr, y, bx, _glyph("vline"), fa)
                 _safe_addstr(
                     stdscr,
@@ -900,9 +971,8 @@ def _tui_select(
                     curses.color_pair(_CP_HEADER) | curses.A_BOLD,
                 )
                 _safe_addstr(stdscr, y, bx + BOX_W - 1, _glyph("vline"), fa)
-                y += 1
-
-            for vi in vis:
+            else:
+                vi = payload
                 _si, _ii, label = visible[vi]
                 is_sel = vi == cur
                 if is_sel:
@@ -916,8 +986,7 @@ def _tui_select(
                 _safe_addstr(stdscr, y, bx + 1, padded, attr)
                 _safe_addstr(stdscr, y, bx + BOX_W - 1, _glyph("vline"), fa)
                 row_map[y] = vi
-                y += 1
-                idx += 1
+            y += 1
 
         _hborder(stdscr, y, bx, INNER, _glyph("bl"), _glyph("hline"), _glyph("br"), fa)
         y += 2
@@ -930,21 +999,26 @@ def _tui_select(
             hints_line = f"{hints}  type to filter"
         else:
             hints_line = hints
+        if scrolled:
+            # The viewport counter: a tall menu is a window, so say where
+            # the selection sits in the full list.
+            hints_line += f"  item {cur + 1}/{len(visible)}"
         hx = max(0, (w - _cell_width(hints_line)) // 2)
         _safe_addstr(
             stdscr, y, hx, hints_line, curses.color_pair(_CP_HINT) | curses.A_DIM
         )
 
         stdscr.refresh()
-        return row_map
+        return row_map, first_row
 
     def _run(stdscr) -> tuple | None:
         _curs_set(0)
         cur = 0
         query = ""
+        first_row = 0
         visible = _filter_visible(flat, query)
         while True:
-            row_map = _draw(stdscr, cur, visible, query)
+            row_map, first_row = _draw(stdscr, cur, visible, query, first_row)
             key = stdscr.get_wch()
             if key == curses.KEY_MOUSE:
                 try:
@@ -985,6 +1059,7 @@ def _tui_select(
                     # Clearing the filter must widen the menu again, not
                     # leave the narrowed view on screen.
                     visible = _filter_visible(flat, query)
+                    first_row = 0
                 else:
                     return None
             elif key in (curses.KEY_BACKSPACE, 127, 8, "\x7f", "\x08"):
@@ -992,6 +1067,7 @@ def _tui_select(
                     query = query[:-1]
                     cur = 0
                     visible = _filter_visible(flat, query)
+                    first_row = 0
             elif key in ("q", "Q") and not query:
                 return None
             elif key == curses.KEY_RESIZE:
@@ -1002,6 +1078,7 @@ def _tui_select(
                 query += key
                 cur = 0
                 visible = _filter_visible(flat, query)
+                first_row = 0
             if visible and cur >= len(visible):
                 cur = len(visible) - 1
 
@@ -1012,7 +1089,7 @@ def _tui_select(
         # degrade the whole session to the text fallback and hand the menu
         # loop a sentinel it re-enters on, instead of silently exiting 0.
         _degrade_to_text()
-        return "fallback"
+        return FALLBACK
 
 
 def _tui_prompt_str(label: str, default: str | None) -> str | None:
@@ -1167,7 +1244,7 @@ def _tui_pause() -> None:
         _pause()
 
 
-def fallback_input(prompt: str, mapping: dict) -> Any:
+def fallback_input(prompt: str, mapping: dict[str, Any]) -> Any:
     # KeyboardInterrupt propagates on purpose: Ctrl-C at the menu must exit
     # 130 like the curses menu does, not read as a clean Quit.
     try:
@@ -1175,10 +1252,14 @@ def fallback_input(prompt: str, mapping: dict) -> Any:
     except EOFError:
         print()
         return None  # input exhausted: treat as Quit
-    return mapping.get(ch, "invalid")
+    return mapping.get(ch, INVALID)
 
 
-def build_fallback(sections, aliases=None, letter_keys=None):
+def build_fallback(
+    sections: list[tuple[str, list[str]]],
+    aliases: dict[str, tuple[int, int] | None] | None = None,
+    letter_keys: dict[str, tuple[str, tuple[int, int] | str | None]] | None = None,
+) -> tuple[list[tuple[str, list[str]]], dict[str, Any], int]:
     aliases = aliases or {}
     letter_keys = letter_keys or {}
     mapping = dict(aliases)
@@ -1206,16 +1287,26 @@ def build_fallback(sections, aliases=None, letter_keys=None):
     return display, mapping, n
 
 
+# The sentinels tui_select can return besides a (section, item) tuple or
+# None: FALLBACK means curses died mid-menu and the host loop should
+# re-enter (text_mode() is True from then on), INVALID means the typed
+# text-menu choice matched nothing and the menu should re-ask. Named
+# constants so hosts stop comparing magic strings; the string values keep
+# working for existing comparisons.
+FALLBACK = "fallback"
+INVALID = "invalid"
+
+
 def tui_select(
-    title,
-    sections,
-    hints=_SELECT_HINTS,
-    aliases=None,
-    letter_keys=None,
-):
+    title: str,
+    sections: list[tuple[str, list[str]]],
+    hints: str = _SELECT_HINTS,
+    aliases: dict[str, tuple[int, int] | None] | None = None,
+    letter_keys: dict[str, tuple[str, tuple[int, int] | str | None]] | None = None,
+) -> tuple[int, int] | str | None:
     if _USE_CURSES:
         res = _tui_select(title, sections, hints=hints)
-        if res != "fallback":
+        if res != FALLBACK:
             return res
     # Fallback
     display, mapping, max_n = build_fallback(sections, aliases, letter_keys)
@@ -1250,6 +1341,23 @@ def _match_lines(
     return None
 
 
+def _match_span(line: str, query: str) -> tuple[int, int] | None:
+    """(start, end) code-point indexes of ``query``'s first casefold
+    occurrence in ``line``, for the pager's highlight; None when no match.
+    When casefolding changes the string's length (rare characters), None
+    too: the coordinates would misalign the highlight (the jump and the
+    match counter still work)."""
+    if not query:
+        return None
+    folded = line.casefold()
+    if len(folded) != len(line):
+        return None
+    idx = folded.find(query.casefold())
+    if idx < 0:
+        return None
+    return (idx, idx + len(query))
+
+
 def _page_text(content: str) -> None:
     """The pager's plain-text path (no curses): print and pause. Shared by
     the no-curses branch and the mid-pager degrade so the two stay in step."""
@@ -1276,10 +1384,12 @@ def tui_page(title: str, content: str) -> None:
         top = 0
         left = 0
         query = ""
+        match_count = 0
         while True:
             stdscr.erase()
             h, w = stdscr.getmaxyx()
             fa = curses.color_pair(_CP_FRAME)
+            item_attr = curses.color_pair(_CP_ITEM)
 
             # Width follows the longest line (up to the terminal width) so wide
             # reports — long duplicate paths, say — are not chopped at 80 columns.
@@ -1325,6 +1435,10 @@ def tui_page(title: str, content: str) -> None:
             hints = (
                 "↑↓ Scroll  ←→ Pan  / Search  n/N Match  g/G Top/Bottom  q/Esc Close"
             )
+            if query:
+                position = f"line {top + 1}/{len(lines)} · {match_count} "
+                position += "match" if match_count == 1 else "matches"
+                hints = position + "  " + hints
             _safe_addstr(
                 stdscr,
                 h - 1,
@@ -1346,13 +1460,48 @@ def tui_page(title: str, content: str) -> None:
                         seg = _slice_cells(ln, left, visible_w - 1) + "…"
                     if left and seg:
                         seg = "…" + _tail_cells(seg, visible_w - 1)
-                    _safe_addstr(
-                        stdscr,
-                        i + 1,
-                        bx + 2,
-                        seg,
-                        curses.color_pair(_CP_ITEM),
-                    )
+                    span = _match_span(ln, query) if query else None
+                    if span is None:
+                        _safe_addstr(stdscr, i + 1, bx + 2, seg, item_attr)
+                    else:
+                        # Draw in runs so the matched cells render reversed;
+                        # a wide character straddling the match edge renders
+                        # whole in the run it starts.
+                        mstart, mend = span
+                        a = _cell_width(ln[:mstart]) - left
+                        b = a + _cell_width(ln[mstart:mend])
+                        pos = 0
+                        run = ""
+                        run_match = None
+                        cx = bx + 2
+                        for ch in seg:
+                            wch = _char_cells(ch)
+                            is_match = pos + wch > a and pos < b
+                            if run and is_match != run_match:
+                                _safe_addstr(
+                                    stdscr,
+                                    i + 1,
+                                    cx,
+                                    run,
+                                    item_attr | curses.A_REVERSE
+                                    if run_match
+                                    else item_attr,
+                                )
+                                cx += _cell_width(run)
+                                run = ""
+                            run_match = is_match
+                            run += ch
+                            pos += wch
+                        if run:
+                            _safe_addstr(
+                                stdscr,
+                                i + 1,
+                                cx,
+                                run,
+                                item_attr | curses.A_REVERSE
+                                if run_match
+                                else item_attr,
+                            )
                 _safe_addstr(stdscr, i + 1, bx + content_w - 1, _glyph("vline"), fa)
 
             stdscr.refresh()
@@ -1379,6 +1528,9 @@ def tui_page(title: str, content: str) -> None:
                 got = _tui_prompt_str("Search", query)
                 if got is not None and got.strip():
                     query = got.strip()
+                    match_count = sum(
+                        1 for ln in lines if query.casefold() in ln.casefold()
+                    )
                     hit = _match_lines(lines, query, top)
                     if hit is not None:
                         top = hit
@@ -1419,7 +1571,7 @@ def tui_page(title: str, content: str) -> None:
 
 
 @contextmanager
-def capture_output():
+def capture_output() -> Iterator[tuple[io.StringIO, io.StringIO]]:
     old_out, old_err = sys.stdout, sys.stderr
     out, err = io.StringIO(), io.StringIO()
     sys.stdout, sys.stderr = out, err
@@ -1429,7 +1581,9 @@ def capture_output():
         sys.stdout, sys.stderr = old_out, old_err
 
 
-def run_with_capture(title: str, func, *args, footer: str = "", **kwargs):
+def run_with_capture(
+    title: str, func: Callable[..., Any], *args, footer: str = "", **kwargs
+) -> Any:
     result = None
     note = ""
     with capture_output() as (out, err):

@@ -574,6 +574,132 @@ def test_reset_terminal_gates_on_curses_engagement(monkeypatch):
     assert calls == [["stty", "sane"]]
 
 
+# --- Session awareness, viewport, flash (2.5.0) ------------------------------------
+
+
+def test_tui_active_reflects_sessions_and_one_shots(monkeypatch):
+    monkeypatch.setattr(menu, "_USE_CURSES", False)
+    monkeypatch.setattr(menu, "_SCREEN", None)
+    assert menu.tui_active() is False
+
+    monkeypatch.setattr(menu, "_USE_CURSES", True)
+    assert menu.tui_active() is True
+
+    # Mid-one-shot: no session flag, but a screen is published.
+    monkeypatch.setattr(menu, "_USE_CURSES", False)
+    monkeypatch.setattr(menu, "_SCREEN", object())
+    assert menu.tui_active() is True
+
+
+def test_progress_factory_is_session_aware(monkeypatch):
+    monkeypatch.setattr(menu, "_USE_CURSES", False)
+    assert isinstance(menu.progress(5, "Work"), core.tqdm)
+    monkeypatch.setattr(menu, "_USE_CURSES", True)
+    assert isinstance(menu.progress(5, "Work"), menu.ProgressBox)
+
+
+def test_color_gates_on_an_active_tui(monkeypatch):
+    # Hosts printing through color()/info() during a curses session used to
+    # inject raw ANSI under the screen; the gate drops styling instead.
+
+    class _TtyOut:
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(core.sys, "stdout", _TtyOut())
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(menu, "_USE_CURSES", False)
+    monkeypatch.setattr(menu, "_SCREEN", None)
+    assert core.color("x", core.RED).startswith("\033[")
+
+    monkeypatch.setattr(menu, "_SCREEN", object())  # a one-shot is live
+    assert core.color("x", core.RED) == "x"
+
+
+def test_sentinel_constants_keep_their_contract_values():
+    assert menu.FALLBACK == "fallback"
+    assert menu.INVALID == "invalid"
+
+
+def test_fallback_input_returns_the_invalid_sentinel(monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda prompt: "zzz")
+    assert menu.fallback_input("Sel: ", {"1": (0, 0)}) == menu.INVALID
+
+
+def test_public_pause_routes_by_mode(monkeypatch):
+    hit = []
+    monkeypatch.setattr(menu, "_USE_CURSES", True)
+    monkeypatch.setattr(menu, "_tui_pause", lambda: hit.append("tui"))
+    menu.pause()
+    assert hit == ["tui"]
+
+    monkeypatch.setattr(menu, "_USE_CURSES", False)
+    monkeypatch.setattr("builtins.input", lambda prompt: "")
+    menu.pause()  # text path: must not raise
+
+
+def test_flash_draws_one_line_and_dismisses(monkeypatch, one_shot_screen):
+    monkeypatch.setattr(menu, "_USE_CURSES", True)
+    one_shot_screen.keys = iter([" "])
+    menu.flash("Not found: /x")
+    drawn = "".join(t for _y, _x, t in one_shot_screen.drawn)
+    assert "Not found: /x" in drawn
+
+
+def test_prompt_path_flashes_misses(monkeypatch, tmp_path):
+    target = tmp_path / "real.txt"
+    target.write_text("x")
+    answers = iter([str(tmp_path / "nope"), str(target)])
+    monkeypatch.setattr(menu, "ask", lambda label, default: next(answers))
+    flashed = []
+    monkeypatch.setattr(menu, "flash", lambda msg: flashed.append(msg))
+    got = menu.prompt_path("Path")
+    assert got == str(target)
+    assert flashed and "nope" in flashed[0]
+
+
+def test_match_span_finds_the_highlight_range():
+    assert menu._match_span("the beta release", "beta") == (4, 8)
+    assert menu._match_span("any", "") is None
+    assert menu._match_span("nope", "beta") is None
+    # Casefolded matching, like the search itself.
+    assert menu._match_span("The BETA", "beta") == (4, 8)
+
+
+def test_pager_highlights_matches_and_shows_the_indicator(monkeypatch, one_shot_screen):
+    one_shot_screen.keys = iter(["/", "q"])
+    monkeypatch.setattr(menu, "_USE_CURSES", True)
+    monkeypatch.setattr(menu, "_tui_prompt_str", lambda label, default: "beta")
+    menu.tui_page("Report", "the beta release\nnothing here\nbeta two")
+    texts = [t for _y, _x, t in one_shot_screen.drawn]
+    # The matched span is drawn as its own run between the plain runs.
+    assert "the " in texts and "beta" in texts and " release" in texts
+    # The hints line carries the position and the match count.
+    hints = [t for t in texts if "match" in t]
+    assert hints and "3" in hints[0] and "2 matches" in hints[0]
+
+
+def test_tall_menu_scrolls_and_counts(monkeypatch, one_shot_screen):
+    # 30 items on a 24-row screen: the box is a window that follows the
+    # selection, with an i/N counter in the hints.
+    items = [f"Item {i:02d}" for i in range(30)]
+    keys = [menu.curses.KEY_DOWN] * 20 + ["\r"]
+    one_shot_screen.keys = iter(keys)
+    got = menu._tui_select("Pick", [("Music", items)])
+    assert got == (0, 20)
+    texts = [t for _y, _x, t in one_shot_screen.drawn]
+    assert any("item 21/30" in t for t in texts)
+
+
+def test_small_menu_does_not_scroll_or_count(monkeypatch, one_shot_screen):
+    items = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"]
+    one_shot_screen.keys = iter(["\r"])
+    got = menu._tui_select("Pick", [("Music", items)])
+    assert got == (0, 0)
+    texts = [t for _y, _x, t in one_shot_screen.drawn]
+    assert not any("item 1/5" in t for t in texts)
+
+
 def test_filter_menu_arrows_navigate_and_q_still_quits(monkeypatch, one_shot_screen):
     # The arrows carry navigation on every menu, and q/Q stay reserved for
     # quit while no query is armed (their own guard predates the j/k fix).

@@ -72,7 +72,15 @@ RESET = "\033[0m"
 
 
 def _use_color() -> bool:
-    return "NO_COLOR" not in os.environ and sys.stdout.isatty()
+    if "NO_COLOR" in os.environ or not sys.stdout.isatty():
+        return False
+    # A live curses session owns the terminal: raw ANSI into stdout would
+    # garble the screen, so styling drops to plain text. The import is
+    # deferred: menu imports this module's tqdm, so importing it eagerly
+    # here would be circular.
+    from . import menu
+
+    return not menu.tui_active()
 
 
 def color(text: str, code: str) -> str:
@@ -105,7 +113,7 @@ def print_header(title: str) -> None:
     tqdm.write(color(f"{'=' * 60}", BOLD))
 
 
-def print_summary(stats: dict) -> None:
+def print_summary(stats: dict[str, object]) -> None:
     tqdm.write(color("\n--- SUMMARY ---", BOLD))
     for k, v in stats.items():
         if isinstance(v, int) and v > 0:
