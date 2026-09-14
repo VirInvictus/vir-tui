@@ -203,6 +203,48 @@ def test_configure_theme_color_pair_names_validate():
         menu.configure_theme(color_pairs={"frames": (1, 0)})
 
 
+def test_configure_theme_value_validation_is_atomic():
+    # A wrong-shaped value raises and applies nothing (the old code stored
+    # the good entries before dying on the bad one, and a wrong-shaped pair
+    # could escape mid-initscr with the terminal left broken).
+    with pytest.raises(ValueError):
+        menu.configure_theme(color_pairs={"selected": ("cyan", "nope")})
+    assert menu._PAIR_OVERRIDES == {}
+
+    with pytest.raises(ValueError):
+        menu.configure_theme(color_pairs={"frame": (1, 0)}, glyphs={"pointer": 7})
+    assert menu._PAIR_OVERRIDES == {}
+    assert menu._GLYPHS == {}
+
+    with pytest.raises(ValueError):
+        menu.configure_theme(glyphs={"tl": "<<"})  # not a single character
+    assert menu._GLYPHS == {}
+
+
+def test_init_tui_colors_survives_one_bad_pair(monkeypatch):
+    # Per-pair try: a pair the terminal rejects must not abort the loop and
+    # leave every later pair uninitialized.
+    attempted = []
+
+    def fake_init_pair(cp, fg, bg):
+        attempted.append(cp)
+        if cp == menu._CP_HEADER:
+            raise menu.curses.error
+
+    monkeypatch.setattr(menu.curses, "start_color", lambda: None)
+    monkeypatch.setattr(menu.curses, "use_default_colors", lambda: None)
+    monkeypatch.setattr(menu.curses, "init_pair", fake_init_pair)
+    menu._init_tui_colors()
+    assert attempted == [
+        menu._CP_FRAME,
+        menu._CP_TITLE,
+        menu._CP_HEADER,
+        menu._CP_ITEM,
+        menu._CP_SELECTED,
+        menu._CP_HINT,
+    ]
+
+
 def test_glyph_defaults_cover_every_name_the_widgets_use():
     for name in [
         "tl",

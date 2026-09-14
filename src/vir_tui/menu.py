@@ -360,21 +360,37 @@ def configure_theme(
     initialization (the next screen open). ``glyphs`` maps glyph names —
     "tl", "tr", "bl", "br", "join_l", "join_r", "soft_l", "soft_r",
     "hline", "hline_light", "vline", "pointer", "block", "block_light" —
-    to characters, effective immediately. Unknown names raise ValueError:
-    a silent typo would leave a host's widgets half-restyled.
+    to single characters, effective immediately. Unknown names raise
+    ValueError: a silent typo would leave a host's widgets half-restyled.
+    Values are validated before anything is applied, so a wrong-shaped
+    entry cannot leave half a theme behind.
     """
-    for name, pair in (color_pairs or {}).items():
+    pairs = dict(color_pairs or {})
+    for name, pair in pairs.items():
         if name not in _PAIR_NAMES:
             raise ValueError(
                 f"unknown color pair {name!r}; expected one of {_PAIR_NAMES}"
             )
-        _PAIR_OVERRIDES[name] = pair
-    for name, ch in (glyphs or {}).items():
+        if (
+            not isinstance(pair, tuple)
+            or len(pair) != 2
+            or not all(isinstance(c, int) for c in pair)
+        ):
+            raise ValueError(
+                f"color pair {name!r} must be an (fg, bg) tuple of curses "
+                f"color ints, got {pair!r}"
+            )
+    glyph_overrides = dict(glyphs or {})
+    for name, ch in glyph_overrides.items():
         if name not in _GLYPH_DEFAULTS:
             raise ValueError(
                 f"unknown glyph {name!r}; expected one of {sorted(_GLYPH_DEFAULTS)}"
             )
-        _GLYPHS[name] = ch
+        if not isinstance(ch, str) or len(ch) != 1:
+            raise ValueError(f"glyph {name!r} must be a single character, got {ch!r}")
+    # Both maps validated: apply.
+    _PAIR_OVERRIDES.update(pairs)
+    _GLYPHS.update(glyph_overrides)
 
 
 def _glyph(name: str) -> str:
@@ -405,7 +421,13 @@ def _init_tui_colors() -> None:
             (_CP_HINT, "hint"),
         ):
             fg, bg = _PAIR_OVERRIDES.get(name, defaults[name])
-            curses.init_pair(cp, fg, bg)
+            try:
+                curses.init_pair(cp, fg, bg)
+            except curses.error:
+                # One pair a terminal cannot render (an out-of-range color on
+                # a limited palette, say) must not abort the rest: the pairs
+                # that did apply stay applied and the rest stay default.
+                pass
     except curses.error:
         pass
 
