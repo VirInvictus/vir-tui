@@ -1,3 +1,8 @@
+"""ANSI styling and the tqdm re-export: color gating (NO_COLOR and TTY
+detection), the success/info/warn/error formatters, and tqdm imported from
+the consumer's environment when available or a minimal stdlib stub when it
+is not."""
+
 import os
 import sys
 
@@ -6,6 +11,12 @@ try:
 except ImportError:
     # Minimal fallback if tqdm is missing
     class tqdm:
+        """Minimal stand-in for the real tqdm: iteration counting, an
+        optional description line, update()/close()/set_description(), and
+        the write() classmethod. Deliberately not a context manager
+        (consumers drive update()/close() directly) and unknown kwargs are
+        absorbed, which covers every surface the consumers exercise."""
+
         def __init__(
             self,
             iterable=None,

@@ -4,7 +4,7 @@
 2. **Dependencies**: `stdlib` only. If `tqdm` is available in the consumer's environment, `vir_tui` re-exports it; otherwise, it exports a minimal stub.
 3. **Architecture**:
    - `core.py`: ANSI state logic, color formats, `tqdm` handling (the real tqdm is re-exported when installed, a styled fallback otherwise).
-   - `menu.py`: everything interactive —
+   - `menu.py`: everything interactive:
      - the curses arrow-key menu (`tui_select`, sections/aliases/letter keys, auto-generated typed-input fallback via `build_fallback`),
      - the scrollable, pannable results pager (`tui_page`) with `/` search and `n`/`N` match jumping (pure `_match_lines` helper),
      - boxed prompts (`ask`, `ask_yn`, `confirm`, `prompt_int`, `prompt_float`, `prompt_out`, `prompt_path`) and the `out_note` report footer,

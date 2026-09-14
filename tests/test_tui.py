@@ -96,7 +96,7 @@ def test_confirm_wording_and_default(monkeypatch):
 
     monkeypatch.setattr(menu, "ask_yn", fake_ask_yn)
     assert menu.confirm("Permanently delete book 7", danger=True) is False
-    assert calls[-1][0].startswith("DANGER — ")
+    assert calls[-1][0].startswith("DANGER: ")
     assert calls[-1][1] == "N"
     assert menu.confirm("Keep going", default=True) is True
     assert calls[-1][0] == "Keep going"
@@ -197,8 +197,6 @@ def test_configure_theme_glyph_override_applies_and_validates():
 def test_configure_theme_color_pair_names_validate():
     menu.configure_theme(color_pairs={"selected": (1, 0)})
     assert menu._PAIR_OVERRIDES["selected"] == (1, 0)
-    # Unnamed pairs stay on their defaults at color init.
-    assert menu._init_tui_colors.__doc__  # lazily applied, documented shape
 
     with pytest.raises(ValueError):
         menu.configure_theme(color_pairs={"frames": (1, 0)})

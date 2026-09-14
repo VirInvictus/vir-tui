@@ -1,3 +1,14 @@
+"""Everything interactive in vir-tui: the curses session lifecycle, the
+arrow-key menu with type-to-filter, boxed prompts, the pannable pager, the
+progress box, theme overrides, and the stdout/stderr capture wrapper.
+
+Sections, top to bottom: session lifecycle, cancellation and boxed prompts,
+notices and text fallbacks, color pairs and theming, cell-width helpers, the
+progress box, the interactive menu, the pager, and capture. Every widget
+routes through _with_screen(), which draws into the persistent session
+screen or boots a one-shot curses wrapper; every curses surface degrades to
+plain text when curses or a TTY is missing. Stdlib only."""
+
 import io
 import os
 import sys
@@ -17,7 +28,7 @@ except ImportError:
 import subprocess
 
 # =====================================
-# Curses TUI / Fallbacks
+# Session lifecycle
 # =====================================
 
 _USE_CURSES = HAVE_CURSES and sys.stdin.isatty()
@@ -64,7 +75,7 @@ def _with_screen(fn):
 def open_screen():
     """Start the session screen (initscr + the modes curses.wrapper would
     set). Returns the screen, or None when curses can't start on this
-    terminal — the caller degrades the whole session to the text menu."""
+    terminal; the caller degrades the whole session to the text menu."""
     global _SCREEN, _USE_CURSES, _CURSES_TOUCHED
     if not HAVE_CURSES:
         # Same degrade contract as close_screen: touch nothing curses-shaped,
@@ -126,8 +137,8 @@ def session_screen():
 
 
 def text_mode() -> bool:
-    """True when the session runs without curses — no TTY, no curses module,
-    or a mid-session degrade. Hosts use it to pick text-only affordances
+    """True when the session runs without curses (no TTY, no curses module,
+    or a mid-session degrade). Hosts use it to pick text-only affordances
     (e.g. printing an error line at a text menu instead of redrawing)."""
     return not _USE_CURSES
 
@@ -166,6 +177,11 @@ def _degrade_to_text() -> None:
     _USE_CURSES = False
 
     close_screen()
+
+
+# =====================================
+# Cancellation and boxed prompts
+# =====================================
 
 
 class CancelledError(Exception):
@@ -219,8 +235,8 @@ def _out_note(path: str | None) -> str:
 
 
 def out_note(path: str | None) -> str:
-    """Public form of :func:`_out_note` — hosts used to copy this helper
-    verbatim because only the underscored name existed."""
+    """Public form of :func:`_out_note`: hosts used to copy the private
+    helper verbatim because only the underscored name existed."""
     return _out_note(path)
 
 
@@ -278,8 +294,13 @@ def prompt_path(label: str, default: str = "", *, must_exist: bool = True) -> st
 def confirm(label: str, default: bool = False, *, danger: bool = False) -> bool:
     """Yes/no gate worded for destructive actions: ``danger`` prefixes the
     label and defaults to No, so a bare Enter never destroys anything."""
-    text = f"DANGER — {label}" if danger else label
+    text = f"DANGER: {label}" if danger else label
     return ask_yn(text, "y" if default else "N")
+
+
+# =====================================
+# Notices and text fallbacks
+# =====================================
 
 
 def notify(msg: str) -> None:
@@ -317,6 +338,11 @@ def _pause() -> None:
         input("\n  Press Enter to continue...")
     except EOFError, KeyboardInterrupt:
         pass
+
+
+# =====================================
+# Color pairs and theming
+# =====================================
 
 
 _CP_FRAME = 1
@@ -369,13 +395,13 @@ def configure_theme(
     """Host-level theme remapping; call once at startup, before the first
     widget runs.
 
-    ``color_pairs`` maps semantic pair names — "frame", "title", "header",
-    "item", "selected", "hint" — to ``(fg, bg)`` curses color constants
+    ``color_pairs`` maps semantic pair names ("frame", "title", "header",
+    "item", "selected", "hint") to ``(fg, bg)`` curses color constants
     (e.g. ``(curses.COLOR_CYAN, -1)``), applied at the next color
-    initialization (the next screen open). ``glyphs`` maps glyph names —
-    "tl", "tr", "bl", "br", "join_l", "join_r", "soft_l", "soft_r",
-    "hline", "hline_light", "vline", "pointer", "block", "block_light" —
-    to single characters, effective immediately. Unknown names raise
+    initialization (the next screen open). ``glyphs`` maps glyph names
+    ("tl", "tr", "bl", "br", "join_l", "join_r", "soft_l", "soft_r",
+    "hline", "hline_light", "vline", "pointer", "block", "block_light") to
+    single characters, effective immediately. Unknown names raise
     ValueError: a silent typo would leave a host's widgets half-restyled.
     Values are validated before anything is applied, so a wrong-shaped
     entry cannot leave half a theme behind.
@@ -492,6 +518,11 @@ _TUI_BOX_W = 46
 _TUI_INNER = _TUI_BOX_W - 2  # chars between the two ║ borders
 
 
+# =====================================
+# Cell-width helpers
+# =====================================
+
+
 def _char_cells(ch: str) -> int:
     """Display cells one character occupies: East Asian wide/fullwidth
     characters take 2, combining marks take 0, everything else 1."""
@@ -581,14 +612,20 @@ def _hborder(
     _safe_addstr(stdscr, y, x, left + mid * count + right, attr)
 
 
+# =====================================
+# Progress
+# =====================================
+
+
 class ProgressBox:
     """Curses progress box matching the TUI style, with a tqdm-like API.
 
     Draws into the persistent session screen when an interactive session owns
     one; without one it prints plain carriage-returned text lines instead of
     starting a screen of its own, so pipes and redirects stay clean. Redraws
-    are throttled — a full-screen erase per item on a 100k-item scan is visible
-    flicker and wasted work — and the final update always draws. Progress is
+    are throttled (a full-screen erase per item on a 100k-item scan is
+    visible flicker and wasted work), and the final update always draws.
+    Progress is
     cosmetic: every draw failure is swallowed, never fatal to the mode.
     """
 
@@ -731,6 +768,11 @@ def progress_box(total: int, desc: str = "") -> ProgressBox:
             bar.update()
     """
     return ProgressBox(total, desc)
+
+
+# =====================================
+# Interactive menu
+# =====================================
 
 
 def _safe_addstr(stdscr, y: int, x: int, text: str, attr: int) -> None:
@@ -1181,11 +1223,16 @@ def tui_select(
     return fallback_input(f"  Select [1-{max_n}/q]: ", mapping)
 
 
+# =====================================
+# Pager
+# =====================================
+
+
 def _match_lines(
     lines: list[str], query: str, start: int = 0, reverse: bool = False
 ) -> int | None:
     """Index of the first line containing ``query`` (case-insensitive),
-    searching forward from ``start`` — or backward when ``reverse`` — and
+    searching forward from ``start`` (backward when ``reverse``) and
     wrapping around once. None when there is no match. A pure helper so
     pager search is testable without a curses session."""
     q = query.casefold()
@@ -1364,6 +1411,11 @@ def tui_page(title: str, content: str) -> None:
     except curses.error:
         _degrade_to_text()
         _page_text(content)
+
+
+# =====================================
+# Capture
+# =====================================
 
 
 @contextmanager
