@@ -1,3 +1,15 @@
+# 2.5.0 (2026-09-14)
+The session-awareness release: the feature queue from THE FINAL AUDIT, executed per Brandon's gate answers. Additive to consumers; no breaks.
+
+- **Feature: session awareness.** `progress(total, desc)` picks the right bar for the moment: a `ProgressBox` drawing into the session's screen during a TUI session, the sanctioned tqdm re-export (real tqdm when installed, the stub otherwise) in text mode. `tui_active()` reports whether any curses surface owns the terminal (sessions and mid-run one-shots), and `color()`/the formatters drop styling while it is true, so hosts can no longer inject raw ANSI under a live screen. This is the library half of the IN_TUI-style flags the consumers hand-roll.
+- **Feature: tall menus scroll.** `tui_select` renders from a row plan through a viewport that follows the selection, so a menu taller than the terminal stays navigable instead of silently cutting rows, with an `item i/N` counter in the hints. Replaces the old shift-up clamp (which could still hide rows on short terminals).
+- **Feature: pager match highlighting and position indicator.** With a search armed, matched spans render reversed (the line is drawn in per-run passes, cell-aware so wide characters never split), and the hints line shows `line i/N · M matches`. Finishes the 2.2.0 search feature.
+- **Feature: `flash()`.** A one-line status notice on the hints row; any key dismisses it, instead of `notify()`'s full-screen pager. `prompt_path` flashes a missing path now, so a typo costs one keypress instead of two. Public `pause()` completes the acknowledgement pair.
+- **Feature: the additive sentinel contract.** `FALLBACK` and `INVALID` export the strings `tui_select` can return besides a `(section, item)` tuple or `None`, so hosts stop comparing magic strings; the string values keep working for existing comparisons (Brandon's call: additive, no redesign).
+- **Feature: `safe_addstr` published** for hosts drawing their own widgets, and the whole package is type-annotated with a `py.typed` marker.
+- **Tests:** suite grew from 38 to 50 (session gating and factory dispatch, sentinel values, pause routing, flash draw/dismiss, prompt_path flashing, match spans, highlight runs and the indicator, viewport scrolling and the counter, small-menu no-scroll). Test-story reminder: `PYTHONPATH=src python -m pytest tests/` from the repo root.
+- **Consumers:** additive release; CalibreQuarry, lattice-music, and bindery-cli hold `>=2.3.0` floors and adopt at their own releases. `lattice-music`'s IN_TUI machinery and CalibreQuarry's text-mode guards can retire onto `progress()`/`tui_active()` whenever each ships its next release.
+
 # 2.4.0 (2026-09-14)
 Terminal-safety release from THE FINAL AUDIT: the three HIGHs (a nested-curses corruption, the j/k filter hijack, the curses-less NameError), the terminal-safety fixes, the honesty batch, and the PyPI storefront. Additive to consumers; no API breaks (the retired `_Cancelled` export now warns instead of vanishing, removal at 3.0).
 
