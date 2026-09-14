@@ -70,7 +70,12 @@ jobs:
     permissions:
       contents: write
     steps:
+      # --notes-from-tag reads the tag's local git object, so this job needs
+      # the clone (and --repo is rejected alongside --notes-from-tag).
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.ref_name }}
       - name: Mint the Release from the tag's verbatim message
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --notes-from-tag --verify-tag --repo "$GITHUB_REPOSITORY"
+        run: gh release create "$GITHUB_REF_NAME" --notes-from-tag --verify-tag
