@@ -22,12 +22,17 @@ import subprocess
 
 _USE_CURSES = HAVE_CURSES and sys.stdin.isatty()
 
-# T7: one persistent curses screen per interactive session. interactive_menu
+# One persistent curses screen per interactive session. interactive_session
 # opens it once and every widget draws into it, so multi-prompt flows no
 # longer flash to the shell between widgets (each widget used to be its own
 # curses.wrapper init/teardown). None when no session owns a screen — widgets
 # invoked directly then fall back to a one-shot wrapper session.
 _SCREEN = None
+
+# Set for good once anything opens a curses surface in this process (a
+# session screen or a one-shot widget boot): reset_terminal only repairs
+# terminals curses actually engaged.
+_CURSES_TOUCHED = False
 
 
 def _with_screen(fn):
@@ -38,9 +43,10 @@ def _with_screen(fn):
         return fn(_SCREEN)
 
     def _boot(stdscr):
-        global _SCREEN
+        global _SCREEN, _CURSES_TOUCHED
+        _CURSES_TOUCHED = True
         _init_tui_colors()
-        _enable_mouse(stdscr)
+        _enable_mouse()
         # Publish the one-shot screen for the wrapper's duration: a nested
         # widget call (e.g. the pager's "/" search prompt) must reuse this
         # screen instead of re-entering curses.wrapper, whose finally block
@@ -59,19 +65,20 @@ def open_screen():
     """Start the session screen (initscr + the modes curses.wrapper would
     set). Returns the screen, or None when curses can't start on this
     terminal — the caller degrades the whole session to the text menu."""
-    global _SCREEN, _USE_CURSES
+    global _SCREEN, _USE_CURSES, _CURSES_TOUCHED
     if not HAVE_CURSES:
         # Same degrade contract as close_screen: touch nothing curses-shaped,
         # so the documented "returns None" path cannot crash on the unbound
         # curses name (the except clause below never evaluates here).
         return None
     try:
+        _CURSES_TOUCHED = True
         stdscr = curses.initscr()
         curses.noecho()
         curses.cbreak()
         stdscr.keypad(True)
         _init_tui_colors()
-        _enable_mouse(stdscr)
+        _enable_mouse()
         _SCREEN = stdscr
         _USE_CURSES = True
         return stdscr
@@ -162,13 +169,14 @@ def _degrade_to_text() -> None:
 
 
 class CancelledError(Exception):
-    pass
+    """Raised when the user cancels a prompt (Esc in the TUI, Ctrl-C/EOF at
+    a text prompt); the active prompt chain unwinds back to the menu instead
+    of launching a mode with defaults."""
 
 
+# Deprecated private alias, kept so older imports of menu._Cancelled keep
+# resolving; the public export warns and both go away in 3.0.
 _Cancelled = CancelledError
-"""Raised when the user cancels a prompt (Esc in the TUI, Ctrl-C/EOF at a
-text prompt); the active prompt chain unwinds back to the menu instead of
-launching a mode with defaults."""
 
 
 def _prompt_str(label: str, default: str | None) -> str | None:
@@ -186,11 +194,11 @@ def _prompt_str(label: str, default: str | None) -> str | None:
 
 
 def ask(label: str, default: str | None) -> str:
-    """_prompt_str that raises _Cancelled instead of returning None, so a
-    multi-prompt handler aborts as one unit."""
+    """_prompt_str that raises CancelledError instead of returning None, so
+    a multi-prompt handler aborts as one unit."""
     val = _prompt_str(label, default)
     if val is None:
-        raise _Cancelled
+        raise CancelledError
     return val
 
 
@@ -439,9 +447,11 @@ def _init_tui_colors() -> None:
         pass
 
 
-def _enable_mouse(stdscr) -> None:
+def _enable_mouse() -> None:
     """Best-effort mouse activation (click-to-select, wheel events). A
-    terminal or curses build without mouse support degrades to keyboard-only."""
+    terminal or curses build without mouse support degrades to keyboard-only.
+    mousemask is a global (curses) setting, so there is nothing to point at
+    a specific screen."""
     try:
         curses.mousemask(curses.ALL_MOUSE_EVENTS)
     except curses.error:
@@ -452,6 +462,10 @@ _FILTER_MIN_ITEMS = 15
 """Type-to-filter arms at this many items: below it every key keeps its
 classic meaning (``q`` quits, arrows and ``j``/``k`` navigate, other
 letters are inert) and a filter would be noise."""
+
+# One definition: the select hints default used to be spelled out (with a
+# mix of escapes and literals) at both the curses and the public entry.
+_SELECT_HINTS = "\u2191\u2193 Navigate  \u23ce Select  q Quit"
 
 
 def _filter_visible(
@@ -635,7 +649,7 @@ class ProgressBox:
         percent = self.current / max(1, self.total)
         bar_len = 30
         filled = int(bar_len * percent)
-        bar = "█" * filled + "░" * (bar_len - filled)
+        bar = _glyph("block") * filled + _glyph("block_light") * (bar_len - filled)
         return (
             f"{self.desc}: |{bar}| {self.current}/{self.total} ({percent * 100:.0f}%)"
         )
@@ -682,7 +696,7 @@ class ProgressBox:
         percent = self.current / max(1, self.total)
         bar_len = inner - 10
         filled = int(bar_len * percent)
-        bar = "█" * filled + "░" * (bar_len - filled)
+        bar = _glyph("block") * filled + _glyph("block_light") * (bar_len - filled)
         pct_str = f"{int(percent * 100):3d}%"
 
         _safe_addstr(s, y + 3, bx, _glyph("vline"), fa)
@@ -730,7 +744,7 @@ def _safe_addstr(stdscr, y: int, x: int, text: str, attr: int) -> None:
 def _tui_select(
     title: str,
     sections: list,
-    hints: str = "\u2191\u2193 Navigate  \u23ce Select  q Quit",
+    hints: str = _SELECT_HINTS,
 ) -> tuple | None:
     """Full-screen arrow-key menu using curses.
 
@@ -1135,6 +1149,11 @@ def build_fallback(sections, aliases=None, letter_keys=None):
             letter = letter_keys.get(clean)
             if letter is not None:
                 key, target = letter
+                if key.isdigit():
+                    raise ValueError(
+                        f"letter key {key!r} for {clean!r} collides with the "
+                        "auto-generated numbers; pick a non-digit key"
+                    )
                 rows.append(f"{key}) {clean}")
                 mapping[key] = (si, ii) if target == "self" else target
             else:
@@ -1148,7 +1167,7 @@ def build_fallback(sections, aliases=None, letter_keys=None):
 def tui_select(
     title,
     sections,
-    hints="↑↓ Navigate  ⏎ Select  q Quit",
+    hints=_SELECT_HINTS,
     aliases=None,
     letter_keys=None,
 ):
@@ -1184,10 +1203,16 @@ def _match_lines(
     return None
 
 
+def _page_text(content: str) -> None:
+    """The pager's plain-text path (no curses): print and pause. Shared by
+    the no-curses branch and the mid-pager degrade so the two stay in step."""
+    print(content)
+    _pause()
+
+
 def tui_page(title: str, content: str) -> None:
     if not _USE_CURSES:
-        print(content)
-        _pause()
+        _page_text(content)
         return
 
     # \r goes the way of \x00: captured stderr routinely carries tqdm's
@@ -1338,8 +1363,7 @@ def tui_page(title: str, content: str) -> None:
         pass  # Ctrl-C just closes the pager
     except curses.error:
         _degrade_to_text()
-        print(content)
-        _pause()
+        _page_text(content)
 
 
 @contextmanager
@@ -1365,11 +1389,12 @@ def run_with_capture(title: str, func, *args, footer: str = "", **kwargs):
             # A mode error must not escape as a raw traceback with the screen
             # stuck in curses mode; page it (plus whatever was captured).
             note = "[Error]\n" + traceback.format_exc().rstrip()
-    # With a session screen the mode's _TUIPbar drew into it and nothing needs
-    # tearing down. Without one (direct invocation) the pbar initscr()'d a
-    # screen of its own; end it before paging, even (especially) when the mode
-    # died mid-run.
-    if _SCREEN is None:
+    # Teardown is defensive: the mode ran under capture, so a live session
+    # screen is the session's business and needs nothing here. If a one-shot
+    # wrapper session ran (no persistent session), endwin it before paging,
+    # even (especially) when the mode died mid-run; on a terminal curses
+    # never touched, reset_terminal does nothing at all.
+    if _SCREEN is None and _CURSES_TOUCHED:
         if _USE_CURSES:
             try:
                 if not curses.isendwin():
@@ -1405,9 +1430,13 @@ def run_with_capture(title: str, func, *args, footer: str = "", **kwargs):
 
 
 def reset_terminal() -> None:
+    """Best-effort `stty sane` for a terminal curses engaged, for hosts
+    cleaning up after a mode died inside a one-shot widget session. A
+    terminal curses never touched (a pure-text run) is left alone: `stty
+    sane` there is pointless churn, and this used to run unconditionally."""
     if _SCREEN is not None:
         return
-    if not sys.stdin.isatty():
+    if not _CURSES_TOUCHED or not sys.stdin.isatty():
         return
     try:
         subprocess.run(["stty", "sane"], stdin=sys.stdin, check=False)

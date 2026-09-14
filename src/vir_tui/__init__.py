@@ -1,3 +1,5 @@
+import warnings
+
 from .core import (
     info,
     success,
@@ -41,6 +43,21 @@ from .menu import (
     tui_page,
     box_menu,
     fallback_input,
-    _Cancelled,  # for backwards compatibility
     capture_output,
 )
+
+
+def __getattr__(name):
+    # PEP 562 module hook: fires only for names the imports above do not
+    # define. _Cancelled is the retired private alias of CancelledError; the
+    # 2.0.0 clean-public-API claim is restored with a deprecation cycle
+    # instead of a hard break, and the alias is removed in 3.0.
+    if name == "_Cancelled":
+        warnings.warn(
+            "vir_tui._Cancelled is the deprecated private alias of "
+            "CancelledError; it will be removed in 3.0.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return CancelledError
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

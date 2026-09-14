@@ -1,6 +1,7 @@
 from vir_tui import core, menu
 
 import pytest
+import vir_tui
 
 
 def test_formatters():
@@ -513,6 +514,66 @@ def test_pager_pans_cjk_by_cells(monkeypatch, one_shot_screen):
     assert one_shot_screen.drawn
     for _y, _x, t in one_shot_screen.drawn:
         assert menu._cell_width(t) <= 80  # nothing renders past the screen
+
+
+# --- Honesty fixes (final audit) ---------------------------------------------------
+
+
+def test_cancelled_alias_deprecated():
+    # vir_tui._Cancelled still resolves (backwards compatibility) but warns;
+    # the public CancelledError is the documented name.
+    with pytest.warns(DeprecationWarning):
+        alias = vir_tui._Cancelled
+    assert alias is vir_tui.CancelledError
+
+
+def test_build_fallback_rejects_digit_letter_keys():
+    # A digit letter key used to collide silently with the auto numbers:
+    # whichever mapping entry came last won.
+    sections = [("Header", ["One", "Two", "Three"])]
+    with pytest.raises(ValueError):
+        menu.build_fallback(sections, letter_keys={"One": ("1", None)})
+    # Non-digit letter keys keep working; a None target stays the
+    # quit-style mapping, and auto-numbering skips the lettered item.
+    display, mapping, max_n = menu.build_fallback(
+        sections, letter_keys={"One": ("a", None)}
+    )
+    assert mapping["a"] is None
+    assert mapping["1"] == (0, 1)
+
+
+def test_progress_bar_draws_through_block_glyphs(monkeypatch):
+    # The bars used to hardcode their fill characters, so the documented
+    # block/block_light glyph overrides silently did nothing.
+    monkeypatch.setattr(menu, "_SCREEN", None)
+    menu.configure_theme(glyphs={"block": "=", "block_light": "-"})
+    bar = menu.ProgressBox(4, "Work")
+    bar.update(2)
+    line = bar._text_line()
+    assert "=" in line and "-" in line
+    assert "█" not in line and "░" not in line
+
+
+def test_reset_terminal_gates_on_curses_engagement(monkeypatch):
+    # A terminal curses never touched gets no `stty sane`: it used to run
+    # unconditionally, even in pure-text sessions.
+
+    class _TtyStdin:
+        def isatty(self):
+            return True
+
+    calls = []
+    monkeypatch.setattr(menu.sys, "stdin", _TtyStdin())
+    monkeypatch.setattr(menu, "_SCREEN", None)
+    monkeypatch.setattr(menu.subprocess, "run", lambda cmd, **k: calls.append(cmd))
+
+    monkeypatch.setattr(menu, "_CURSES_TOUCHED", False)
+    menu.reset_terminal()
+    assert calls == []
+
+    monkeypatch.setattr(menu, "_CURSES_TOUCHED", True)
+    menu.reset_terminal()
+    assert calls == [["stty", "sane"]]
 
 
 def test_filter_menu_arrows_navigate_and_q_still_quits(monkeypatch, one_shot_screen):
