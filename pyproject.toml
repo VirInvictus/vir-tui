@@ -13,6 +13,26 @@ authors = [
     { name = "Brandon LaRocque" }
 ]
 dependencies = []
+keywords = ["tui", "curses", "terminal", "menu", "pager", "progress", "cli", "ansi"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console :: Curses",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Terminals",
+]
+# PEP 639: the license expression above carries the licensing metadata; a
+# license classifier would be deprecated duplication.
+
+[project.urls]
+Homepage = "https://github.com/VirInvictus/vir-tui"
+Repository = "https://github.com/VirInvictus/vir-tui"
+Changelog = "https://github.com/VirInvictus/vir-tui/blob/main/patchnotes.md"
+Issues = "https://github.com/VirInvictus/vir-tui/issues"
 
 [tool.ruff]
 lint.extend-ignore = ['F401', 'BLE001', 'S110', 'RUF059', 'I001']
