@@ -86,9 +86,15 @@ def open_screen():
 
 def close_screen() -> None:
     """End the session screen. Idempotent and guarded, so it is safe after a
-    mid-session degrade already ended the screen."""
-    global _SCREEN
+    mid-session degrade already ended the screen. Ending a real session also
+    flips text_mode() back to True: after close_screen no TUI is active."""
+    global _SCREEN, _USE_CURSES
+    had_screen = _SCREEN is not None
     _SCREEN = None
+    if had_screen:
+        # Only a session that owned a screen resets the flag: a defensive
+        # close with no session must not change one-shot widget routing.
+        _USE_CURSES = False
 
     if not HAVE_CURSES:
         return
@@ -490,6 +496,7 @@ class ProgressBox:
         self.current = 0
         self._last_draw = 0.0
         self._closed = False
+        self._dirty = False
         self.draw()
 
     def set_description(self, desc: str) -> None:
@@ -506,14 +513,21 @@ class ProgressBox:
             or time.monotonic() - self._last_draw >= self._MIN_REDRAW_S
         ):
             self.draw()
+        else:
+            # Throttled away: the new count is not on screen yet.
+            self._dirty = True
 
     def close(self) -> None:
         """Release the display. The session screen is the session's to tear
         down (the next menu redraw erases the box); the text fallback just
-        ends its in-place line."""
+        ends its in-place line. A run that ended short of total still gets
+        its throttled final state drawn, so the box never closes on a stale
+        count."""
         if self._closed:
             return
         self._closed = True
+        if self._dirty:
+            self.draw()
         if _SCREEN is None and sys.stdout.isatty():
             try:
                 sys.stdout.write("\n")
@@ -537,6 +551,7 @@ class ProgressBox:
         )
 
     def draw(self) -> None:
+        self._dirty = False
         self._last_draw = time.monotonic()
         scr = _SCREEN
         try:
@@ -685,8 +700,10 @@ def _tui_select(
         y = max(0, (h - box_h - 2) // 2)
         if y + sel_row >= h - 1:
             # Terminal shorter than the menu: shift the box up so the selected
-            # row stays visible (rows scrolled off the top just don't draw).
-            y = (h - 2) - sel_row
+            # row stays visible, but never below the top edge (a negative y
+            # used to fail every draw silently, leaving a blank screen with
+            # keys working blind). Rows past the bottom simply don't draw.
+            y = max(0, (h - 2) - sel_row)
 
         _safe_addstr(
             stdscr, y, bx, _glyph("tl") + _glyph("hline") * INNER + _glyph("tr"), fa
@@ -825,6 +842,9 @@ def _tui_select(
                 if query:
                     query = ""
                     cur = 0
+                    # Clearing the filter must widen the menu again, not
+                    # leave the narrowed view on screen.
+                    visible = _filter_visible(flat, query)
                 else:
                     return None
             elif key in (curses.KEY_BACKSPACE, 127, 8, "\x7f", "\x08"):
@@ -1090,7 +1110,9 @@ def tui_page(title: str, content: str) -> None:
         _pause()
         return
 
-    lines = content.replace("\x00", "").expandtabs(4).split("\n")
+    # \r goes the way of \x00: captured stderr routinely carries tqdm's
+    # carriage-return progress frames, which scramble addstr rendering.
+    lines = content.replace("\x00", "").replace("\r", "").expandtabs(4).split("\n")
     # Computed once, not per keypress: the content never changes while paging.
     max_line_len = max((len(ln) for ln in lines), default=0)
 

@@ -399,6 +399,68 @@ def test_open_screen_degrades_without_curses(monkeypatch):
     assert closed == [True]
 
 
+def test_close_screen_restores_text_mode(monkeypatch):
+    # After a real session closes, no TUI is active: text_mode() must be
+    # True again (it used to stay False, steering prompts at a dead screen).
+    monkeypatch.setattr(menu, "_SCREEN", object())
+    monkeypatch.setattr(menu, "_USE_CURSES", True)
+    menu.close_screen()
+    assert menu._SCREEN is None
+    assert menu.text_mode() is True
+
+    # A defensive close with no session owns nothing to reset: one-shot
+    # routing stays as it was.
+    monkeypatch.setattr(menu, "_USE_CURSES", True)
+    menu.close_screen()
+    assert menu.text_mode() is False
+
+
+def test_esc_clearing_the_filter_widens_the_menu(monkeypatch, one_shot_screen):
+    # Esc used to reset the query string but leave the narrowed view on
+    # screen, so the hints promised the full menu while Enter picked from
+    # the filter's leftovers.
+    items = [f"Item {i:02d}" for i in range(15)] + ["Zebra finale"]
+    one_shot_screen.keys = iter(["z", "e", "b", "\x1b", "\r"])
+    got = menu._tui_select("Pick", [("Music", items)])
+    assert got == (0, 0)
+
+
+def test_short_terminal_keeps_the_menu_on_screen(monkeypatch, one_shot_screen):
+    # A terminal shorter than the menu: the shift up must clamp at the top
+    # edge. It used to go negative, where every draw failed silently and
+    # left a blank screen with keys working blind.
+    items = [f"Item {i:02d}" for i in range(16)]
+    one_shot_screen.h = 4
+    one_shot_screen.keys = iter(["\r"])
+    got = menu._tui_select("Pick", [("Music", items)])
+    assert got == (0, 0)
+    assert one_shot_screen.drawn  # rows did draw
+    assert min(y for y, _x, _t in one_shot_screen.drawn) >= 0
+
+
+def test_pager_strips_carriage_returns(monkeypatch, one_shot_screen):
+    # Captured stderr carries tqdm's \r progress frames; they used to
+    # scramble the pager's addstr rendering.
+    one_shot_screen.keys = iter(["q"])
+    monkeypatch.setattr(menu, "_USE_CURSES", True)
+    menu.tui_page("Report", "Scan\rScan: 1\rScan: 2\nplain\r")
+    drawn_text = "".join(t for _y, _x, t in one_shot_screen.drawn)
+    assert "\r" not in drawn_text
+    assert "Scan: 2" in drawn_text  # the last frame survived, as text
+
+
+def test_progressbox_close_forces_the_final_state(monkeypatch):
+    # A run ending short of total: the throttled update left the new count
+    # undrawn, and close() must land it anyway ("final update always
+    # draws" was false on exactly this path).
+    monkeypatch.setattr(menu, "_SCREEN", None)
+    bar = menu.ProgressBox(10, "Scanning")
+    bar.update(4)  # inside the redraw window: throttled
+    assert bar._dirty
+    bar.close()
+    assert bar._dirty is False  # the final state was forced out
+
+
 def test_filter_menu_arrows_navigate_and_q_still_quits(monkeypatch, one_shot_screen):
     # The arrows carry navigation on every menu, and q/Q stay reserved for
     # quit while no query is armed (their own guard predates the j/k fix).
