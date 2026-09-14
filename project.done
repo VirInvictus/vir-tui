@@ -1,0 +1,26 @@
+# project.done
+
+- **Completion date:** 2026-09-14
+- **Executed by:** the vir-tui repo agent of THE FINAL BLITZ; verified afterwards by the manager.
+- **Commit range:** e1cda42..30f45f0 (14 commits). Tags **v2.4.0** (c29a5a7) and **v2.5.0** (30f45f0), both annotated with the verbatim patchnotes entry (cat-file verified before push). Both tag pushes published to PyPI via OIDC; GitHub Releases exist for v2.3.0 (backfilled), v2.4.0, and v2.5.0 (minted by the new create-release job). CI green throughout; suite 50 tests, ruff check + format clean.
+
+## What shipped
+
+### v2.4.0 (terminal-safety + honesty + the PyPI storefront)
+- All three HIGHs: the nested curses.wrapper teardown (one-shot stdscr published into _SCREEN), the j/k filter hijack (guard on filter_on, arrows navigate, small menus unchanged), and the open_screen curses-less NameError.
+- configure_theme atomic value validation + per-pair color init; the small filter/terminal batch (Esc recompute, \r strip, short-terminal clamp, text_mode reset, ProgressBox close force-draw); CJK cell-width helpers at every width site with the shared _hborder box-frame helper.
+- Honesty: block/block_light wired into the bars (gate), _Cancelled deprecated with a warning (gate: removal at 3.0), MAGENTA/DIM removed (gate), reset_terminal engagement gate + docstring, digit letter-key rejection, "DANGER: " label, CP 1-6 reservation documented, letter_keys documented fallback-only (gate), styled-fallback recast, API.md created, CLAUDE.md floors corrected to >=2.3.0.
+- PyPI-facing: README storefront (Install, usage, 3.14 floor, accurate consumer line), pyproject keywords/classifiers/[project.urls] (PEP 639; decision 62 closed: the wheel carries License-Expression: GPL-3.0-or-later), publish.yml SHA-pinned (checkout v4, setup-python v5, gh-action-pypi-publish v1.14.2) + permissions + concurrency + twine check --strict + wheel smoke-install + create-release job; GitHub description/topics/homepage set; comment/prose pass (em-dashes, banners, module docstrings, .gitignore expansion, .venv_ci deleted).
+
+### v2.5.0 (session awareness + the feature queue)
+- progress() session-aware factory; session-aware color() + public tui_active(); scrolling viewport + item i/N counter for tall menus; pager match highlighting + "line i/N . M matches" indicator; flash() one-line notice (prompt_path routes through it); FALLBACK/INVALID constants + public pause(); safe_addstr published; full type annotations + py.typed.
+
+## Reopen conditions (recorded gated / future work)
+- **_Cancelled removal at 3.0** (deprecation shipped in 2.4.0; the alias and the package __getattr__ hook go away then).
+- **menu.py six-file split (Proposal A)** only if a feature lane forces growth; Proposal B section banners shipped in 2.4.0.
+- **Ruleset/environment policy declined this window** (Brandon's call): reopen if collaborators ever push here.
+- **Sentinel redesign and letter_keys dispatch declined**: additive constants shipped; document-only stance on letter_keys. Reopen only if a consumer actually needs more.
+- **Multi-select mode** (FINAL-REPORT L4.12) stays logged, not built; needs a consumer pulling.
+- **v2.2.0 GitHub Release backfill** optional and undone (the lane named v2.3.0, which is done); one `gh release create v2.2.0 --notes-from-tag` if wanted.
+- Roadmap audit-block quotes keep em-dashes inside quoted finding text (dated records); all agent-written prose is clean.
+- Community files (SECURITY.md/FUNDING.yml, FINAL-REPORT L6.8) were not on the ranked list and were not created.
