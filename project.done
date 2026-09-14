@@ -24,3 +24,6 @@
 - **v2.2.0 GitHub Release backfill** optional and undone (the lane named v2.3.0, which is done); one `gh release create v2.2.0 --notes-from-tag` if wanted.
 - Roadmap audit-block quotes keep em-dashes inside quoted finding text (dated records); all agent-written prose is clean.
 - Community files (SECURITY.md/FUNDING.yml, FINAL-REPORT L6.8) were not on the ranked list and were not created.
+
+## Post-completion addendum (same day)
+Brandon authorized the consumer adoption wave: all three consumers now carry vir-tui>=2.5.0 floors (CalibreQuarry 91b5097, lattice-music and bindery-cli lockfiles resolved to 2.5.0), suites green in each, vir-tui's CLAUDE.md floors updated to match. No consumer releases were cut; patchnotes mentions ride each app's next natural release. Detail: FINAL-REPORT.md addendum.
