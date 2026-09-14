@@ -318,3 +318,36 @@ def test_pager_search_reuses_the_one_shot_screen(monkeypatch, one_shot_screen):
     monkeypatch.setattr(menu, "_tui_prompt_str", fake_prompt)
     menu.tui_page("Report", "hello world")
     assert seen["screen"] is one_shot_screen
+
+
+# --- Type-to-filter dispatch ---------------------------------------------------------
+
+
+def test_filter_menu_dispatches_jk_to_the_filter(monkeypatch, one_shot_screen):
+    # The 2026-09 audit's HIGH: on a 15+ menu, j/k are filter text (the
+    # documented contract is "printable characters type a filter"), so
+    # typing "jazz" must land whole in the query. "Razzberry" placed before
+    # "Jazz standards" makes the old dispatch observable: the hijack moved
+    # the cursor on "j" and narrowed to "azz", returning Razzberry.
+    items = [f"Item {i:02d}" for i in range(14)] + ["Razzberry", "Jazz standards"]
+    one_shot_screen.keys = iter(["j", "a", "z", "z", "\r"])
+    got = menu._tui_select("Pick", [("Music", items)])
+    assert got == (0, 15)
+
+
+def test_small_menu_j_still_navigates(monkeypatch, one_shot_screen):
+    # Below the filter threshold every key keeps its classic meaning.
+    items = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"]
+    one_shot_screen.keys = iter(["j", "\r"])
+    assert menu._tui_select("Pick", [("Music", items)]) == (0, 1)
+
+
+def test_filter_menu_arrows_navigate_and_q_still_quits(monkeypatch, one_shot_screen):
+    # The arrows carry navigation on every menu, and q/Q stay reserved for
+    # quit while no query is armed (their own guard predates the j/k fix).
+    items = [f"Item {i:02d}" for i in range(16)]
+    one_shot_screen.keys = iter([menu.curses.KEY_DOWN, "\r"])
+    assert menu._tui_select("Pick", [("Music", items)]) == (0, 1)
+
+    one_shot_screen.keys = iter(["q"])
+    assert menu._tui_select("Pick", [("Music", items)]) is None

@@ -416,8 +416,8 @@ def _enable_mouse(stdscr) -> None:
 
 _FILTER_MIN_ITEMS = 15
 """Type-to-filter arms at this many items: below it every key keeps its
-simple meaning (``q`` quits, letters do nothing) and a filter would be
-noise."""
+classic meaning (``q`` quits, arrows and ``j``/``k`` navigate, other
+letters are inert) and a filter would be noise."""
 
 
 def _filter_visible(
@@ -778,10 +778,17 @@ def _tui_select(
                     cur = (cur - 1) % max(1, len(visible))
                 elif bstate & curses.BUTTON5_PRESSED:
                     cur = (cur + 1) % max(1, len(visible))
-            elif key in (curses.KEY_UP, "k"):
+            # Guard discipline: on filter-capable menus the printable letters
+            # j/k belong to the filter, because the documented contract is
+            # "printable characters type a filter" and dispatching them to
+            # navigation first is how typing "jazz" moved the cursor and
+            # filtered "azz". The arrow keys carry navigation on every menu;
+            # below the threshold j/k keep their classic meaning. q/Q stay
+            # reserved for quit while no query is armed (their own guard).
+            elif key == curses.KEY_UP or (key == "k" and not filter_on):
                 if visible:
                     cur = (cur - 1) % len(visible)
-            elif key in (curses.KEY_DOWN, "j"):
+            elif key == curses.KEY_DOWN or (key == "j" and not filter_on):
                 if visible:
                     cur = (cur + 1) % len(visible)
             elif key in (curses.KEY_ENTER, 10, 13, "\n", "\r"):
