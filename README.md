@@ -1,5 +1,7 @@
 # vir-tui
 
+> **Status: complete and stable.** Bug reports welcome; feature development is closed.
+
 A lightweight, terminal UI primitive library for the VirInvictus CLI toolchain.
 
 Provides a curses-based interactive menu with type-to-filter and mouse support, a scrollable results pager, ANSI colors with `NO_COLOR` and TTY gating, boxed input prompt lifecycles, theme overrides, and a session-aware progress box for CLI applications that run headless but offer an interactive terminal interface.
