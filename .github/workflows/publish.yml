@@ -70,12 +70,29 @@ jobs:
     permissions:
       contents: write
     steps:
-      # --notes-from-tag reads the tag's local git object, so this job needs
-      # the clone (and --repo is rejected alongside --notes-from-tag).
+      # The job needs a clone for the local tag-object read below (gh's
+      # --notes-from-tag is NOT used: inside Actions it silently falls back
+      # to the commit message -- Catagotchi issue #2).
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.ref_name }}
+      # checkout rewrites refs/tags/vX to the resolved commit SHA even after
+      # its fetch (deadbeef-cui v2.0.1 precedent), so the annotated object
+      # must be re-fetched --force right before it is read.
+      - name: Fetch the annotated tag object
+        env:
+          TAG: ${{ github.ref_name }}
+        run: git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
       - name: Mint the Release from the tag's verbatim message
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --notes-from-tag --verify-tag
+          TAG: ${{ github.ref_name }}
+        run: |
+          OT="$(git for-each-ref "refs/tags/$TAG" --format='%(objecttype)')"
+          if [ "$OT" != "tag" ]; then
+            echo "::error::tag $TAG is $OT, not an annotated tag; the verbatim patchnotes entry is unavailable"
+            exit 1
+          fi
+          git for-each-ref "refs/tags/$TAG" --format='%(contents)' > /tmp/release-notes.md
+          TITLE="$(head -1 /tmp/release-notes.md)"
+          gh release create "$TAG" --verify-tag --notes-file /tmp/release-notes.md --title "$TITLE"
